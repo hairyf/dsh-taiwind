@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "共享 Tailwind 样式",
+    "description": "聚合客户端插件的工具类，生成一份去重样式，支持各插件独立的静态 Tailwind 配置。"
+  }
+}

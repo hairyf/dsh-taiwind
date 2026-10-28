@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Shared Tailwind CSS",
+    "description": "Combines client bundle utility classes into one stylesheet, with per-plugin static Tailwind configuration."
+  }
+}

@@ -16,18 +16,32 @@ export const dshExternal = [
 const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as { name: string }
 const id = JSON.stringify(pkg.name)
 
+function recordBuild(face: 'host' | 'client'): Pick<UserConfig, 'plugins' | 'hooks'> {
+  const recorder = StaleGuardRecorder({ hashFile: `node_modules/.cache/tsdown-stale-guard/${face}.yaml` })
+  return {
+    plugins: [{ ...recorder, writeBundle: undefined }],
+    hooks: {
+      'build:done': async () => {
+        if (typeof recorder.writeBundle !== 'function')
+          throw new TypeError('StaleGuardRecorder must provide a writeBundle hook')
+        await Reflect.apply(recorder.writeBundle, undefined, [])
+      },
+    },
+  }
+}
+
 const common: UserConfig = {
   outDir: 'dist',
   format: 'esm',
   outExtensions: () => ({ js: '.js' }),
   publint: true,
   external: dshExternal,
-  plugins: [StaleGuardRecorder],
 }
 
 export default defineConfig([
   {
     ...common,
+    ...recordBuild('host'),
     entry: { index: 'src/index.ts' },
     dts: true,
     sourcemap: false,
@@ -35,10 +49,11 @@ export default defineConfig([
   },
   {
     ...common,
+    ...recordBuild('client'),
     entry: { client: 'src/client/index.ts' },
-    // Client bundles are classic scripts consumed by dsh-client-modules.
-    // CJS output is required so its exports remain inside the loader factory.
     format: 'cjs',
+    outExtensions: () => ({ js: '.cjs' }),
+    publint: false,
     define: { 'process.env.NODE_ENV': JSON.stringify('production') },
     banner: `window.__ModuleLoader__.load({id:${id},factory:(require)=>{var module={exports:{}};var exports=module.exports;`,
     footer: 'return module.exports;}});',

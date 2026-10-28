@@ -1,4 +1,6 @@
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
+import { mountStyles } from './styles'
 
-export function apply(_ctx: ClientContext): void {
+export function apply(ctx: Context): void {
+  ctx.effect(mountStyles)
 }
