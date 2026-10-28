@@ -1,8 +1,91 @@
 # dsh-taiwindcss
 
-把当前 DSH 客户端插件使用的 Tailwind 工具类取并集，编译成一份共享样式。例如插件 A 使用 `w-xl`，插件 B 使用 `w-full w-xl`，共享样式中的 `.w-xl`、`.w-full` 各生成一次。
+[![npm version][npm-version-src]][npm-version-href]
+[![npm downloads][npm-downloads-src]][npm-downloads-href]
+[![bundle][bundle-src]][bundle-href]
+[![CI][ci-src]][ci-href]
+[![Tailwind CSS][tailwind-src]][tailwind-href]
+[![DSH][dsh-src]][dsh-href]
+[![Node.js][node-src]][node-href]
+[![License][license-src]][license-href]
+
+为 DeepSeek Harness 插件提供一份共享的 Tailwind CSS：插件各自发布 npm 包，工具类统一收集、编译和去重，不必再各带一份重复的 Tailwind 样式。
 
 基于 Tailwind CSS 4.3.3，要求 DSH `>=0.2.1-alpha.1`、Node.js `>=22.18.0`。本仓库提供源码和构建产物；尚未发布 npm，不能把 `npm install dsh-taiwindcss` 当作已经可用的安装方式。
+
+## Why？为什么需要它
+
+DSH 插件是独立的 npm 包，却运行在同一个页面。如果每个插件分别编译并挂载 Tailwind，常用的宽度、间距、布局规则就会重复输出；若只靠宿主预先生成，又无法覆盖第三方插件后来新增的类。
+
+`dsh-taiwindcss` 把编译放到 DSH 宿主侧：从当前客户端插件的构建文件中收集完整类名，再用同一套 Tailwind 编译器生成共享样式。插件仍可独立开发和发布，不需要加入同一个 monorepo，也不要求使用同一种构建工具。
+
+```mermaid
+flowchart LR
+  A["插件 A：w-xl"] --> U["工具类并集"]
+  B["插件 B：w-full、w-xl"] --> U
+  U --> T["共享 Tailwind 编译"]
+  T --> S["一份样式：w-full、w-xl 各一条规则"]
+```
+
+这里的去重针对共享编译产生的工具类，不是把多个 CSS 文件拼接后删掉重复字符串，也不会自动删除其他插件已经挂载的样式。
+
+## 有什么好处？与 CSS-in-JS 相比
+
+两者都能让样式与组件放在一起，区别在于复用的单位。常见 CSS-in-JS 会为组件样式生成类名；Tailwind 直接复用 `flex`、`gap-2`、`w-full` 这样的工具类，本插件再把复用范围扩展到不同 npm 包。
+
+| 对比点 | 常见运行时 CSS-in-JS | Tailwind + dsh-taiwindcss |
+| --- | --- | --- |
+| 跨插件复用 | 各包生成的组件样式不一定能跨包去重，取决于实现与共享运行时 | 相同工具类进入同一次编译，在共享产物中只生成一次 |
+| 浏览器工作 | 可能在组件渲染时计算、序列化并插入样式 | 浏览器使用已编译的 CSS；不运行 Tailwind 编译器，也不按组件渲染生成规则 |
+| 状态与主题 | 通过 props、主题对象或库 API 表达 | 用 `hover:`、`md:`、`dark:` 等变体组合样式，CSS-first token 集中参与编译 |
+| 独立包接入 | 需要各包约定库版本、主题和样式挂载方式 | 客户端保留完整类名，按需附带原始 `main.css`；共享编译与挂载交给本插件 |
+
+这些优势主要针对运行时 CSS-in-JS。构建期提取 CSS 的方案也能减少浏览器运行时工作，部分原子化方案同样能复用规则；不能据此断言 Tailwind 在所有项目里都更小或更快。这里的重点是 **DSH 独立插件之间共享工具类产物**，不是替代所有样式方案。动态数值仍适合使用 CSS 变量或内联样式，不应拼接不完整的类名。
+
+## 实现原理
+
+宿主只处理当前客户端模块图中的包，把构建文件里的候选类与包内 CSS-first 定义分开收集，再交给同一个编译器。
+
+```mermaid
+flowchart TD
+  G["DSH 客户端模块图"] --> P["定位客户端构建入口与所属 npm 包"]
+  P --> J["扫描入口目录中的 JS / CJS / MJS"]
+  J --> C["Tailwind 官方扫描器提取候选类"]
+  P --> E{"存在 main.css？"}
+  E -->|有| F["读取 CSS-first 定义与相对导入"]
+  F --> X["仅显式 @config 时加载旧配置"]
+  E -->|无| O["可选：发现包根目录旧配置"]
+  X --> V["合并主题与全局选项，检查定义冲突"]
+  O --> V
+  C --> T["统一 Tailwind 编译，不加载 Preflight"]
+  V --> T
+  T --> H["首屏注入共享 style"]
+  T --> R["带 ETag 的 CSS 接口"]
+  H --> S["客户端接管同一个 style"]
+  R --> S
+```
+
+共享样式既会增长，也会在删除类名或卸载插件后收缩。更新失败时不清空已打开页面的有效样式，修复后再替换。
+
+```mermaid
+flowchart TD
+  G["客户端插件图变化"] --> R["刷新输入"]
+  P["每两秒检查构建文件与配置"] --> R
+  R --> V{"读取与校验成功？"}
+  V -->|否| E["初次启动失败；运行中报错并返回 503"]
+  E --> K["已打开页面保留上次有效样式，等待修复"]
+  V -->|是| D{"输入内容有变化？"}
+  D -->|无| C["复用上次成功编译结果"]
+  D -->|有| T["按当前完整候选集合重新编译"]
+  T --> O{"编译成功？"}
+  O -->|否| E
+  O -->|是| N["保存新 CSS 与 ETag"]
+  C --> B["浏览器定期发起条件请求"]
+  N --> B
+  B --> M{"ETag 相同？"}
+  M -->|是| U["304：保持现有样式"]
+  M -->|否| S["200：更新同一个 style"]
+```
 
 ## 工作方式
 
@@ -79,6 +162,11 @@ export default {
 
 根配置修改会重新加载，TypeScript 辅助模块修改也已覆盖刷新测试。原生 CJS/JSON 辅助模块受 Node.js 模块缓存影响，修改后需要重启宿主；本插件不会清理其他插件共享的模块缓存。
 
+## 取舍与限制
+
+- **共享编译器也有成本**：安装时需要 Tailwind、Oxide 原生扫描器等宿主依赖，增加磁盘占用；首次编译及后续输入变化也会消耗宿主 CPU。编译器不进入浏览器，但不等于整个插件安装包更小；只有少量样式的单个插件未必值得引入。这里不提供未经测量的体积或性能收益数字。
+- **共享不是隔离**：插件共用主题和全局选项，定义冲突可能阻止整份样式更新；动态拼接类名也无法可靠扫描。适合采用共同约定、使用完整工具类的插件，不适合要求完全独立 Tailwind 配置的插件。
+
 ## 和已有 CSS 共存
 
 本插件只对自己生成的样式去重，不删除宿主或其他插件已经挂载的 CSS。如果插件还在打包并加载自己的 Tailwind 样式，页面仍会存在重复规则；迁移时应停止该插件的独立 Tailwind CSS 挂载，保留确实需要的非 Tailwind 自定义样式。不同来源、不同版本 Tailwind 之间的主题及层叠优先级也不会自动统一。
@@ -106,3 +194,22 @@ pnpm run build
 ## License
 
 [MIT](<LICENSE.md>) © dsh-tauri-desk，保留上游模板授权。
+
+<!-- Badges -->
+
+[npm-version-src]: https://img.shields.io/npm/v/dsh-taiwindcss?style=flat&colorA=080f12&colorB=1fa669
+[npm-version-href]: https://npmjs.com/package/dsh-taiwindcss
+[npm-downloads-src]: https://img.shields.io/npm/dm/dsh-taiwindcss?style=flat&colorA=080f12&colorB=1fa669
+[npm-downloads-href]: https://npmjs.com/package/dsh-taiwindcss
+[bundle-src]: https://img.shields.io/bundlephobia/minzip/dsh-taiwindcss?style=flat&colorA=080f12&colorB=1fa669&label=minzip
+[bundle-href]: https://bundlephobia.com/result?p=dsh-taiwindcss
+[ci-src]: https://img.shields.io/github/actions/workflow/status/hairyf/dsh-taiwindcss/ci.yml?branch=main&style=flat&colorA=080f12&colorB=1fa669&label=CI
+[ci-href]: https://github.com/hairyf/dsh-taiwindcss/actions/workflows/ci.yml
+[tailwind-src]: https://img.shields.io/badge/Tailwind_CSS-4.3.3-1fa669?style=flat&colorA=080f12
+[tailwind-href]: https://tailwindcss.com/docs
+[dsh-src]: https://img.shields.io/badge/DSH-%3E%3D0.2.1--alpha.1-1fa669?style=flat&colorA=080f12
+[dsh-href]: https://github.com/hairyf/dsh-taiwindcss/blob/main/package.json
+[node-src]: https://img.shields.io/badge/Node.js-%3E%3D22.18.0-1fa669?style=flat&colorA=080f12
+[node-href]: https://nodejs.org/
+[license-src]: https://img.shields.io/github/license/hairyf/dsh-taiwindcss.svg?style=flat&colorA=080f12&colorB=1fa669
+[license-href]: https://github.com/hairyf/dsh-taiwindcss/blob/main/LICENSE.md
