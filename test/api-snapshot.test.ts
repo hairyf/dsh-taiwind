@@ -14,7 +14,7 @@ const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { 
 
 describe('build configuration', () => {
   it('records both faces through configured hooks without losing freshness checks', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'dsh-taiwindcss-recorder-'))
+    const fixture = await mkdtemp(join(tmpdir(), 'dsh-taiwind-recorder-'))
     try {
       const outDir = join(fixture, 'dist')
       await mkdir(outDir)

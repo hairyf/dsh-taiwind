@@ -10,7 +10,7 @@ type HostContext = Context & {
 };
 //#endregion
 //#region src/index.d.ts
-declare const name = "dsh-taiwindcss";
+declare const name = "dsh-taiwind";
 declare const inject: string[];
 declare function apply(ctx: HostContext): Promise<void>;
 //#endregion

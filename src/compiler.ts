@@ -332,9 +332,9 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   const scanner = new Scanner({})
   const candidates = scanner.scanFiles(sources)
   const imports = cssImports.map(path => `@import ${JSON.stringify(path.replaceAll('\\', '/'))};`).join('\n')
-  const compiler = await compile(`@layer theme, base, components, utilities;\n@layer theme {\n${theme}\n}\n${imports}\n@layer utilities {\n${utilities}\n}\n@config "dsh-taiwindcss:merged";`, {
+  const compiler = await compile(`@layer theme, base, components, utilities;\n@layer theme {\n${theme}\n}\n${imports}\n@layer utilities {\n${utilities}\n}\n@config "dsh-taiwind:merged";`, {
     loadModule: async (id) => {
-      if (id !== 'dsh-taiwindcss:merged')
+      if (id !== 'dsh-taiwind:merged')
         throw new Error(`Unexpected Tailwind module: ${id}`)
       return { path: id, base: '', module: merged as Config }
     },

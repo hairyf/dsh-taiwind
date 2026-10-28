@@ -1,17 +1,17 @@
 {
-  "name": "dsh-taiwindcss",
+  "name": "dsh-taiwind",
   "type": "module",
   "version": "0.1.0",
   "packageManager": "pnpm@11.15.1",
   "description": "One shared Tailwind stylesheet for DSH plugins with per-plugin configuration",
   "author": "Hairy <wwu710632@gmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/hairyf/dsh-taiwindcss#readme",
+  "homepage": "https://github.com/hairyf/dsh-taiwind#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hairyf/dsh-taiwindcss.git"
+    "url": "git+https://github.com/hairyf/dsh-taiwind.git"
   },
-  "bugs": "https://github.com/hairyf/dsh-taiwindcss/issues",
+  "bugs": "https://github.com/hairyf/dsh-taiwind/issues",
   "keywords": ["dsh", "plugin", "tailwindcss"],
   "sideEffects": false,
   "exports": {

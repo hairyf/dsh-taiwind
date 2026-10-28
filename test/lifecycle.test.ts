@@ -80,7 +80,7 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
   const rows: { html: string }[] = []
   inject(rows)
   expect(rows).toHaveLength(1)
-  expect(rows[0].html).toContain('<style data-plugin="dsh-taiwindcss"')
+  expect(rows[0].html).toContain('<style data-plugin="dsh-taiwind"')
   expect(rows[0].html).toContain('.w-full')
   compile.mockRejectedValueOnce(new Error('invalid config'))
   graphChanged()
@@ -159,7 +159,7 @@ it('adopts the boot style, conditionally refreshes it, preserves it on failure, 
   await vi.advanceTimersByTimeAsync(0)
   expect(createElement).not.toHaveBeenCalled()
   expect(append).not.toHaveBeenCalled()
-  expect(String(fetcher.mock.calls[0][0])).toBe('https://example.test/prefix/plugins/dsh-taiwindcss.css')
+  expect(String(fetcher.mock.calls[0][0])).toBe('https://example.test/prefix/plugins/dsh-taiwind.css')
   expect(style.textContent).toBe('.w-full {}')
   await vi.advanceTimersByTimeAsync(4000)
   expect(fetcher.mock.calls[1][1].headers).toEqual({ 'If-None-Match': '"one"' })

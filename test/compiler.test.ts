@@ -7,7 +7,7 @@ import { compilePlugins } from '../src/compiler'
 const temporary: string[] = []
 
 async function plugin(id: string, content: string, config?: string, filename = 'tailwind.config.mjs') {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-taiwindcss-'))
+  const root = await mkdtemp(join(tmpdir(), 'dsh-taiwind-'))
   temporary.push(root)
   const dist = join(root, 'dist')
   await mkdir(dist)
@@ -200,7 +200,7 @@ describe('compilePlugins', () => {
     await writeFile(join(first.dist, 'chunks', 'lazy.mjs'), 'export default "max-w-full"')
     await mkdir(join(first.dist, 'node_modules'))
     await writeFile(join(first.dist, 'node_modules', 'vendor.js'), '"hidden"')
-    const outside = await mkdtemp(join(tmpdir(), 'dsh-taiwindcss-outside-'))
+    const outside = await mkdtemp(join(tmpdir(), 'dsh-taiwind-outside-'))
     temporary.push(outside)
     await writeFile(join(outside, 'outside.js'), '"inline-flex"')
     await symlink(outside, join(first.dist, 'linked'), 'junction')

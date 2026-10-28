@@ -296,9 +296,9 @@ async function compilePlugins(entries) {
 	const digest = hash.digest("hex");
 	if (cached?.hash === digest) return cached.css;
 	const candidates = new Scanner({}).scanFiles(sources);
-	const compiler = await compile(`@layer theme, base, components, utilities;\n@layer theme {\n${theme}\n}\n${cssImports.map((path) => `@import ${JSON.stringify(path.replaceAll("\\", "/"))};`).join("\n")}\n@layer utilities {\n${utilities}\n}\n@config "dsh-taiwindcss:merged";`, {
+	const compiler = await compile(`@layer theme, base, components, utilities;\n@layer theme {\n${theme}\n}\n${cssImports.map((path) => `@import ${JSON.stringify(path.replaceAll("\\", "/"))};`).join("\n")}\n@layer utilities {\n${utilities}\n}\n@config "dsh-taiwind:merged";`, {
 		loadModule: async (id) => {
-			if (id !== "dsh-taiwindcss:merged") throw new Error(`Unexpected Tailwind module: ${id}`);
+			if (id !== "dsh-taiwind:merged") throw new Error(`Unexpected Tailwind module: ${id}`);
 			return {
 				path: id,
 				base: "",
@@ -326,8 +326,8 @@ async function compilePlugins(entries) {
 }
 //#endregion
 //#region src/constants.ts
-const PLUGIN_ID = "dsh-taiwindcss";
-const STYLESHEET_PATH = "plugins/dsh-taiwindcss.css";
+const PLUGIN_ID = "dsh-taiwind";
+const STYLESHEET_PATH = "plugins/dsh-taiwind.css";
 const POLL_INTERVAL_MS = 2e3;
 //#endregion
 //#region src/index.ts
