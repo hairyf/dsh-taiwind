@@ -6,12 +6,12 @@ import { compilePlugins } from '../src/compiler'
 
 const temporary: string[] = []
 
-async function plugin(id: string, content: string, config?: string, filename = 'tailwind.config.mjs') {
+async function plugin(id: string, content: string, config?: string, filename = 'tailwind.config.mjs', taiwind?: string) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-taiwind-'))
   temporary.push(root)
   const dist = join(root, 'dist')
   await mkdir(dist)
-  await writeFile(join(root, 'package.json'), JSON.stringify({ name: id, type: 'module' }))
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: id, type: 'module', dsh: taiwind ? { taiwind } : undefined }))
   const path = join(dist, 'client.js')
   await writeFile(path, content)
   if (config)
@@ -38,9 +38,9 @@ describe('compilePlugins', () => {
     expect(await compilePlugins([second, first])).toBe(css)
   })
 
-  it('discovers CSS-first entries without JS config and compiles one shared set of utilities', async () => {
-    const first = await plugin('first', '"w-xl w-panel bg-notes compact"')
-    const second = await plugin('second', '"w-xl w-full bg-notes compact"')
+  it('compiles the declared CSS-first entry without JS config', async () => {
+    const first = await plugin('first', '"w-xl w-panel bg-notes compact"', undefined, undefined, 'main.css')
+    const second = await plugin('second', '"w-xl w-full bg-notes compact"', undefined, undefined, 'dist/main.css')
     const cssEntry = '@import "tailwindcss"; @theme { --color-notes: #123456; --container-panel: 28rem; } @utility compact { padding: 3px; }'
     await writeFile(join(first.root, 'main.css'), cssEntry)
     await writeFile(join(second.dist, 'main.css'), cssEntry)
@@ -55,8 +55,8 @@ describe('compilePlugins', () => {
     expect(css).not.toContain('box-sizing: border-box')
   })
 
-  it('discovers a nested main.css, follows relative imports and refreshes imported changes', async () => {
-    const first = await plugin('first', '"w-panel tiny h-full"')
+  it('follows relative imports from the declared entry and refreshes imported changes', async () => {
+    const first = await plugin('first', '"w-panel tiny h-full"', undefined, undefined, 'src/client/main.css')
     const directory = join(first.root, 'src', 'client')
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'main.css'), '@import "tailwindcss"; @import "./theme.css"; .notes-card { @apply w-full; }')
@@ -72,12 +72,10 @@ describe('compilePlugins', () => {
     expect(changed).not.toContain('font-size: 9px')
     expect(changed).not.toContain('width: 31px')
     await rm(join(directory, 'main.css'))
-    const removed = await compilePlugins([first])
-    expect(removed).not.toContain('.w-panel')
-    expect(removed).not.toContain('.notes-card')
+    await expect(compilePlugins([first])).rejects.toThrow(/first.*dsh\.taiwind entry not found/)
   })
 
-  it('ignores stylesheet entries owned by nested packages', async () => {
+  it('ignores main.css files that are not the declared entry', async () => {
     const first = await plugin('first', '"w-full"')
     const nested = join(first.root, 'examples', 'nested')
     await mkdir(join(nested, 'lib'), { recursive: true })
@@ -88,8 +86,8 @@ describe('compilePlugins', () => {
     expect(css).not.toContain('--color-nested')
   })
 
-  it('prefers root main.css over a compiled copy and ignores implicit JS config', async () => {
-    const first = await plugin('first', '"w-panel w-legacy"', 'throw new Error("must not execute")')
+  it('uses only the declared entry and ignores a compiled copy and implicit JS config', async () => {
+    const first = await plugin('first', '"w-panel w-legacy"', 'throw new Error("must not execute")', undefined, 'main.css')
     await writeFile(join(first.root, 'main.css'), '@import "tailwindcss"; @theme inline { --container-panel: 41px; }')
     await writeFile(join(first.dist, 'main.css'), 'invalid compiled stylesheet {')
     const css = await compilePlugins([first])
@@ -98,7 +96,7 @@ describe('compilePlugins', () => {
   })
 
   it('loads JS config only through explicit @config when CSS exists, with CSS theme taking precedence', async () => {
-    const first = await plugin('first', '"w-legacy bg-brand"', 'export default { theme: { extend: { width: { legacy: "53px" }, colors: { brand: "red" } } } }')
+    const first = await plugin('first', '"w-legacy bg-brand"', 'export default { theme: { extend: { width: { legacy: "53px" }, colors: { brand: "red" } } } }', undefined, 'dist/main.css')
     await writeFile(join(first.dist, 'main.css'), '@import "tailwindcss"; @config "../tailwind.config.mjs"; @theme { --color-brand: blue; }')
     const css = await compilePlugins([first])
     expect(css).toContain('width: 53px')
@@ -107,7 +105,7 @@ describe('compilePlugins', () => {
   })
 
   it('supports CSS custom variants, inline sources, reference imports and import flags', async () => {
-    const first = await plugin('first', '"tw:panel:compact tw:dark:w-full"')
+    const first = await plugin('first', '"tw:panel:compact tw:dark:w-full"', undefined, undefined, 'main.css')
     await writeFile(join(first.root, 'main.css'), '@import "tailwindcss" prefix(tw) important source(none); @reference "./tokens.css"; @custom-variant panel (&:where(.notes-panel *)); @custom-variant dark (&:where(.night *)); @source inline("tw:h-full");')
     await writeFile(join(first.root, 'tokens.css'), '@utility compact { padding: 3px; } .not-emitted { color: red; }')
     const css = await compilePlugins([first])
@@ -120,8 +118,8 @@ describe('compilePlugins', () => {
   })
 
   it('reports cross-plugin CSS definition conflicts instead of silently changing another plugin', async () => {
-    const first = await plugin('first', '"bg-brand compact"')
-    const second = await plugin('second', '"bg-brand compact"')
+    const first = await plugin('first', '"bg-brand compact"', undefined, undefined, 'main.css')
+    const second = await plugin('second', '"bg-brand compact"', undefined, undefined, 'main.css')
     await writeFile(join(first.root, 'main.css'), '@theme { --color-brand: red; } @utility compact { padding: 3px; }')
     await writeFile(join(second.root, 'main.css'), '@theme { --color-brand: blue; }')
     await expect(compilePlugins([first, second])).rejects.toThrow(/CSS conflict.*--color-brand.*first.*second/)
@@ -129,13 +127,17 @@ describe('compilePlugins', () => {
     await expect(compilePlugins([first, second])).rejects.toThrow(/CSS conflict.*@utility compact.*first.*second/)
   })
 
-  it('rejects ambiguous CSS entries, circular imports and unsupported directives', async () => {
+  it('rejects invalid declarations, circular imports and unsupported directives', async () => {
     const first = await plugin('first', '"w-full"')
-    await mkdir(join(first.root, 'src'))
-    await mkdir(join(first.root, 'other'))
-    await writeFile(join(first.root, 'src', 'main.css'), '')
-    await writeFile(join(first.root, 'other', 'main.css'), '')
-    await expect(compilePlugins([first])).rejects.toThrow(/multiple main.css entries/)
+    await expect(compilePlugins([first])).resolves.toContain('.w-full')
+    await writeFile(join(first.root, 'main.css'), '')
+    await expect(compilePlugins([first])).rejects.toThrow(/first.*declare "dsh"/)
+    await rm(join(first.root, 'main.css'))
+    await writeFile(join(first.root, 'package.json'), JSON.stringify({ name: 'first', dsh: { taiwind: 42 } }))
+    await expect(compilePlugins([first])).rejects.toThrow(/first.*dsh\.taiwind must be a relative \.css path/)
+    await writeFile(join(first.root, 'package.json'), JSON.stringify({ name: 'first', dsh: { taiwind: './missing.css' } }))
+    await expect(compilePlugins([first])).rejects.toThrow(/first.*dsh\.taiwind entry not found/)
+    await writeFile(join(first.root, 'package.json'), JSON.stringify({ name: 'first', dsh: { taiwind: './main.css' } }))
     const main = join(first.root, 'main.css')
     await writeFile(main, '@import "./main.css";')
     await expect(compilePlugins([first])).rejects.toThrow(/first.*circular CSS import/)
@@ -148,7 +150,7 @@ describe('compilePlugins', () => {
   })
 
   it('rejects custom source directories in relative imports and utilities directives', async () => {
-    const first = await plugin('first', '"w-full"')
+    const first = await plugin('first', '"w-full"', undefined, undefined, 'main.css')
     const main = join(first.root, 'main.css')
     await writeFile(join(first.root, 'tokens.css'), '@theme { --color-notes: red; }')
     for (const directive of ['@import "./tokens.css" source("./src");', '@tailwind utilities source("./src");']) {

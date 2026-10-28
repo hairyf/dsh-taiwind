@@ -138,41 +138,16 @@ async function bundles(directory) {
 	}
 	return files;
 }
-async function nestedPackage(directory) {
-	try {
-		await readFile(join(directory, "package.json"));
-		return true;
-	} catch (error) {
-		if (error.code === "ENOENT") return false;
-		throw error;
+async function cssEntry(root, owner) {
+	const entry = JSON.parse(await readFile(join(root, "package.json"), "utf8")).dsh?.taiwind;
+	if (entry === void 0) {
+		if (await stat(join(root, "main.css")).then((info) => info.isFile(), () => false)) throw new Error(`${owner}: main.css is not discovered automatically anymore; declare "dsh": { "taiwind": "main.css" } in package.json`);
+		return;
 	}
-}
-async function cssEntry(root, clientDirectory) {
-	for (const directory of /* @__PURE__ */ new Set([root, clientDirectory])) {
-		const entry = (await readdir(directory, { withFileTypes: true })).find((item) => item.name === "main.css");
-		if (entry) {
-			if (!entry.isFile()) throw new Error(`${directory}: main.css must be a regular file`);
-			return join(directory, entry.name);
-		}
-	}
-	const found = [];
-	const visit = async (directory) => {
-		for (const item of await readdir(directory, { withFileTypes: true })) {
-			if ([
-				"node_modules",
-				"archive",
-				".git"
-			].includes(item.name) || item.isSymbolicLink()) continue;
-			const path = join(directory, item.name);
-			if (item.isDirectory()) {
-				if (await nestedPackage(path)) continue;
-				await visit(path);
-			} else if (item.isFile() && item.name === "main.css") found.push(path);
-		}
-	};
-	await visit(root);
-	if (found.length > 1) throw new Error(`${root}: multiple main.css entries found: ${found.sort().join(", ")}`);
-	return found[0];
+	if (typeof entry !== "string" || !entry.trim() || extname(entry) !== ".css") throw new Error(`${owner}: dsh.taiwind must be a relative .css path`);
+	const path = resolve(root, entry);
+	if (!await stat(path).then((info) => info.isFile(), () => false)) throw new Error(`${owner}: dsh.taiwind entry not found: ${entry}`);
+	return path;
 }
 async function compilePlugins(entries) {
 	const hash = createHash("sha256");
@@ -301,7 +276,7 @@ async function compilePlugins(entries) {
 			]));
 			bundleFiles.push(file);
 		}
-		const stylesheet = await cssEntry(root, dirname(path));
+		const stylesheet = await cssEntry(root, entry.id);
 		if (stylesheet) {
 			cssImports.push(await loadCss(stylesheet, root, entry.id));
 			continue;

@@ -56,15 +56,24 @@ pnpm add dsh-taiwind
       name: dsh-taiwind
 ```
 
-用户启用业务插件时，`dsh-taiwind` 将随行一起启用，而客户端半也必须有一行启用中的 Loader 条目才会被 `dsh-client-modules` 加载。
+用户启用业务插件时，`dsh-taiwind` 将随行一起启用。
 
-- 它没有界面、没有工具，唯一产物是共享样式接口 `plugins/taiwind.css` 和页面上的一个 `<style data-plugin="dsh-taiwind">`。
-- 宿主半要求 `clientModules`、`webServer`、`connection` 三件服务齐备。
+- 它没有界面和工具，唯一产物是共享样式接口 `plugins/taiwind.css` 和页面上的 `<style data-plugin="dsh-taiwind">`。
 - 扫描范围是当前客户端图里所有插件的构建产物，插件图变化会自动触发重新编译。
 
-### 2. 在插件包里写样式
+### 2. 声明样式入口
 
-在插件包中保留未编译的 `main.css`：
+在插件包的 `package.json` 里显式声明未编译的 CSS 入口（相对包根，必须位于包内）：
+
+```json
+{
+  "dsh": {
+    "taiwind": "src/main.css"
+  }
+}
+```
+
+`main.css` 保留未编译的 CSS-first 写法：
 
 ```css
 @import "tailwindcss";
@@ -81,16 +90,11 @@ pnpm add dsh-taiwind
 
 🚀 客户端直接使用 taiwind 类名，例如 `bg-notes-accent w-notes-panel notes-compact` 即可。
 
-入口发现顺序：
-
-1. 包根目录的 `main.css`
-2. 客户端入口同目录的 `main.css`（如 `client/main.css`）
-3. 以上都没有时，在包内查找 `main.css`；
-4. 找到多个会明确报错，不任意选择
+没有声明 `dsh.taiwind` 的包不参与样式编译；声明了但路径不是相对 `.css`、文件不存在或指向包外都会明确报错，不会去猜别的 `main.css`。
 
 ### 3. 发布时携带样式文件
 
-在 `package.json` 中添加 `files` 字段，发布时需要携带 `main.css`：
+在 `package.json` 中添加 `files` 字段，发布时需要携带入口 CSS 及它引用的相对 CSS：
 
 ```json
 {

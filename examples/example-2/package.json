@@ -24,7 +24,8 @@
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
-    }
+    },
+    "taiwind": "lib/main.css"
   },
   "dependencies": {
     "dsh-taiwind": "workspace:*"
