@@ -1,6 +1,7 @@
 {
   "name": "example-1",
   "version": "0.0.0",
+  "private": true,
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
