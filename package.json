@@ -1,7 +1,7 @@
 {
   "name": "dsh-taiwind",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packageManager": "pnpm@11.15.1",
   "description": "One shared Tailwind stylesheet for DSH plugins with per-plugin configuration",
   "author": "Hairy <wwu710632@gmail.com>",
