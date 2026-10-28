@@ -64,7 +64,7 @@ pnpm add dsh-taiwind
 
 ### 2. 在插件包里写样式
 
-在插件包中保留未编译的 `main.css`，不需要 `tailwind.config.js`，也不用把路径传给本插件：
+在插件包中保留未编译的 `main.css`：
 
 ```css
 @import "tailwindcss";
@@ -79,7 +79,7 @@ pnpm add dsh-taiwind
 }
 ```
 
-客户端直接使用 `bg-notes-accent w-notes-panel notes-compact` 即可。
+🚀 客户端直接使用 taiwind 类名，例如 `bg-notes-accent w-notes-panel notes-compact` 即可。
 
 入口发现顺序：
 
@@ -103,7 +103,7 @@ pnpm add dsh-taiwind
 
 ## ⚙️ 配置文件（可选）
 
-可在包根目录放一份 `tailwind.config.js`（也认 `.cjs` / `.mjs`），或用 CSS 的 `@config` 显式引用：
+可在包根目录放一份 `tailwind.config.js`，或用 CSS 的 `@config` 显式引用：
 
 ```js
 /** @type {import("tailwindcss").Config} */
