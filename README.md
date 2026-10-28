@@ -43,7 +43,7 @@ flowchart LR
 ### 1. 安装
 
 ```sh
-pnpm add dsh-taiwind
+pnpm add dsh-taiwind@latest
 ```
 
 在业务插件的 `cordis.patch.yml` 里插入它（连同自身行）：
@@ -90,8 +90,6 @@ pnpm add dsh-taiwind
 
 🚀 客户端直接使用 taiwind 类名，例如 `bg-notes-accent w-notes-panel notes-compact` 即可。
 
-没有声明 `dsh.taiwind` 的包不参与样式编译；声明了但路径不是相对 `.css`、文件不存在或指向包外都会明确报错，不会去猜别的 `main.css`。
-
 ### 3. 发布时携带样式文件
 
 在 `package.json` 中添加 `files` 字段，发布时需要携带入口 CSS 及它引用的相对 CSS：
@@ -130,8 +128,8 @@ CSS 入口存在时**不会自动加载根目录 JS 配置**，需要时在 CSS 
 
 | 项目 | 说明 |
 | --- | --- |
-| 发布 | 原始 CSS 入口及其相对导入必须进 npm 包；只发 `dist` 时一并复制，不要用展开后的构建 CSS 代替 |
-| 不支持 | TypeScript 配置（只认 `.js` / `.mjs` / `.cjs`）、npm CSS 包导入、路径别名、远程 CSS、`@plugin`、文件路径形式的 `@source`、自定义 `source(...)` 扫描目录、跨包 CSS 导入 |
+| 发布 | 原始 CSS 入口及其相对导入必须进 npm 包； |
+| 不支持 | TypeScript 配置、npm CSS 包导入、路径别名、远程 CSS、`@plugin`、文件路径形式的 `@source`、自定义 `source(...)` 扫描目录、跨包 CSS 导入 |
 | 冲突检测 | 自定义 token、同名 `@utility` / `@custom-variant` 定义不一致会报错并指包名；非完整 CSS 语义等价判断 |
 | 主题合并 | 遵循 Tailwind 4：同 token 的 CSS 定义优先；所有插件共享全局主题，不按插件隔离 |
 | 自定义 CSS | 一起输出，但不自动限定作用域、去重或改写资源 URL；请用插件前缀选择器和可直接访问的资源地址 |
