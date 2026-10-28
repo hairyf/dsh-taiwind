@@ -45,7 +45,6 @@
   },
   "dependencies": {
     "@tailwindcss/oxide": "catalog:",
-    "jiti": "catalog:",
     "postcss": "catalog:",
     "tailwindcss": "catalog:"
   },

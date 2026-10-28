@@ -49,9 +49,6 @@ catalogs:
     '@tailwindcss/oxide':
       specifier: 4.3.3
       version: 4.3.3
-    jiti:
-      specifier: 2.7.0
-      version: 2.7.0
     postcss:
       specifier: 8.5.20
       version: 8.5.20
@@ -90,9 +87,6 @@ importers:
       '@tailwindcss/oxide':
         specifier: 'catalog:'
         version: 4.3.3
-      jiti:
-        specifier: 'catalog:'
-        version: 2.7.0
       postcss:
         specifier: 'catalog:'
         version: 8.5.20

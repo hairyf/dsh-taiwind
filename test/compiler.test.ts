@@ -150,7 +150,7 @@ describe('compilePlugins', () => {
 
   it('merges static theme extensions from each owning npm package', async () => {
     const first = await plugin('first', '"w-first w-shared"', 'export default { theme: { extend: { width: { first: "17px", shared: "29px" } } } }')
-    const second = await plugin('second', '"w-second w-shared"', 'module.exports = { theme: { extend: { width: { second: "23px", shared: "29px" } } } }', 'taiwind.config.cts')
+    const second = await plugin('second', '"w-second w-shared"', 'module.exports = { theme: { extend: { width: { second: "23px", shared: "29px" } } } }', 'taiwind.config.cjs')
     const css = await compilePlugins([first, second])
     expect(css).toContain('width: 17px')
     expect(css).toContain('width: 23px')
@@ -210,16 +210,13 @@ describe('compilePlugins', () => {
     expect(css).not.toContain('.inline-flex')
   })
 
-  it('reloads imported config helpers and recovers after a failed config', async () => {
-    const first = await plugin('first', '"w-helper"', 'import width from "./width.ts"; export default { theme: { extend: { width } } }', 'tailwind.config.ts')
-    const helper = join(first.root, 'width.ts')
-    await writeFile(helper, 'export default { helper: "31px" }')
+  it('reloads the ESM config, imports helpers, and recovers after a failed config', async () => {
+    const first = await plugin('first', '"w-helper"', 'import width from "./width.mjs"; export default { theme: { extend: { width } } }', 'tailwind.config.mjs')
+    await writeFile(join(first.root, 'width.mjs'), 'export default { helper: "31px" }')
     expect(await compilePlugins([first])).toContain('width: 31px')
-    await writeFile(helper, 'export default { helper: "47px" }')
-    expect(await compilePlugins([first])).toContain('width: 47px')
-    await writeFile(join(first.root, 'tailwind.config.ts'), 'export default { theme: { extend: { width: () => ({ helper: "47px" }) } } }')
+    await writeFile(join(first.root, 'tailwind.config.mjs'), 'export default { theme: { extend: { width: () => ({ helper: "47px" }) } } }')
     await expect(compilePlugins([first])).rejects.toThrow(/first.*static/)
-    await writeFile(join(first.root, 'tailwind.config.ts'), 'export default { theme: { extend: { width: { helper: "53px" } } } }')
+    await writeFile(join(first.root, 'tailwind.config.mjs'), 'export default { theme: { extend: { width: { helper: "53px" } } } }')
     expect(await compilePlugins([first])).toContain('width: 53px')
   })
 
@@ -229,6 +226,11 @@ describe('compilePlugins', () => {
     expect(await compilePlugins([first])).toContain('width: 61px')
     await writeFile(join(first.root, 'tailwind.config.cjs'), 'module.exports = { theme: { extend: { width: { helper: "73px" } } } }')
     expect(await compilePlugins([first])).toContain('width: 73px')
+  })
+
+  it('rejects TypeScript configs instead of silently ignoring them', async () => {
+    const first = await plugin('first', '"w-full"', 'export default { theme: { extend: { width: { helper: "31px" } } } }', 'tailwind.config.ts')
+    await expect(compilePlugins([first])).rejects.toThrow(/first.*unsupported Tailwind config tailwind\.config\.ts/)
   })
 
   it('rejects unsupported options, direct theme replacement, duplicate configs, and a wrong owner', async () => {

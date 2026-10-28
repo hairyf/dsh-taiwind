@@ -19,7 +19,6 @@ allowBuilds:
 catalog:
   '@deepseek-ai/dsh-client-modules': 0.2.1-alpha.1
   '@tailwindcss/oxide': 4.3.3
-  jiti: 2.7.0
   postcss: 8.5.20
   tailwindcss: 4.3.3
 catalogs:

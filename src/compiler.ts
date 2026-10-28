@@ -1,18 +1,46 @@
 import type { Config } from 'tailwindcss'
 import { createHash } from 'node:crypto'
 import { readdir, readFile, realpath } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Scanner } from '@tailwindcss/oxide'
-import { createJiti } from 'jiti'
 import postcss from 'postcss'
 import { compile } from 'tailwindcss'
 
 type Data = string | number | boolean | null | Data[] | { [key: string]: Data }
 interface ObjectData { [key: string]: Data }
 
-const configPattern = /^(?:tailwind|taiwind)\.config\.[cm]?[jt]s$/
+const configNamePattern = /^(?:tailwind|taiwind)\.config\.[^.]+$/
+const configPattern = /^(?:tailwind|taiwind)\.config\.[cm]?js$/
 const bundlePattern = /\.[cm]?js$/
+const nodeRequire = createRequire(import.meta.url)
 let cached: { hash: string, css: string } | undefined
+
+async function nativeModule(configPath: string, root: string): Promise<boolean> {
+  const extension = extname(configPath)
+  if (extension === '.mjs')
+    return true
+  if (extension === '.cjs')
+    return false
+  return (JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { type?: string }).type === 'module'
+}
+
+// ponytail: ESM 配置自身按内容哈希热重载，它 import 的模块要重启进程；CJS 走 require 缓存清理可全量刷新。
+async function loadModule(configPath: string, rawConfig: string, root: string): Promise<unknown> {
+  if (await nativeModule(configPath, root)) {
+    const url = pathToFileURL(configPath)
+    url.search = `?v=${createHash('sha256').update(rawConfig).digest('hex').slice(0, 16)}`
+    const loaded = await import(url.href) as { default?: unknown }
+    return loaded.default ?? loaded
+  }
+  for (const key of Object.keys(nodeRequire.cache)) {
+    if (key.startsWith(`${root}${sep}`))
+      delete nodeRequire.cache[key]
+  }
+  const loaded = nodeRequire(configPath) as { default?: unknown } | null
+  return loaded?.default ?? loaded
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
@@ -183,7 +211,6 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   const owners = new Map<string, string>()
   const aliases = new Map<string, { value: string, owner: string }>()
   const seen = new Set<string>()
-  const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false, tryNative: false })
   const stylesheets = new Map<string, string>()
   const cssImports: string[] = []
   const cssDefinitions = new Map<string, { value: string, owner: string }>()
@@ -194,7 +221,7 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
     merged[key] = value
     owners.set(key, owner)
   }
-  const loadConfig = async (configPath: string, owner: string): Promise<void> => {
+  const loadConfig = async (configPath: string, owner: string, root: string): Promise<void> => {
     configPath = await realpath(configPath)
     if (configsSeen.has(configPath))
       return
@@ -202,9 +229,7 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
     const rawConfig = await readFile(configPath, 'utf8')
     let loaded: unknown
     try {
-      // ponytail: native CJS/JSON helpers refresh on restart; use isolated evaluation for full helper HMR.
-      const evaluated = jiti.evalModule(rawConfig, { filename: configPath, forceTranspile: true, async: false }) as { default?: unknown } | null
-      loaded = evaluated?.default ?? evaluated
+      loaded = await loadModule(configPath, rawConfig, root)
     }
     catch (error) {
       throw new Error(`${owner}: failed to load ${configPath}`, { cause: error })
@@ -255,7 +280,7 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
         if (rule.name === 'config') {
           if (options || !id.startsWith('.'))
             throw new Error(`${owner}: @config requires a relative path without options`)
-          await loadConfig(resolve(dirname(path), id), owner)
+          await loadConfig(resolve(dirname(path), id), owner, root)
           rule.remove()
         }
         else if (/^tailwindcss(?:\/(?:index|theme|utilities|preflight)(?:\.css)?)?$/.test(id)) {
@@ -312,14 +337,16 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
       cssImports.push(await loadCss(stylesheet, root, entry.id))
       continue
     }
-    const configs = (await readdir(root, { withFileTypes: true })).filter(item => configPattern.test(item.name))
+    const configs = (await readdir(root, { withFileTypes: true })).filter(item => configNamePattern.test(item.name))
     if (configs.length > 1)
       throw new Error(`${entry.id}: multiple Tailwind configs found: ${configs.map(item => item.name).join(', ')}`)
     if (!configs.length)
       continue
     if (!configs[0].isFile())
       throw new Error(`${entry.id}: Tailwind config must be a regular file`)
-    await loadConfig(join(root, configs[0].name), entry.id)
+    if (!configPattern.test(configs[0].name))
+      throw new Error(`${entry.id}: unsupported Tailwind config ${configs[0].name}; use .js, .cjs or .mjs`)
+    await loadConfig(join(root, configs[0].name), entry.id, root)
   }
   if (!Object.hasOwn(merged, 'darkMode'))
     merged.darkMode = 'class'

@@ -52,10 +52,10 @@ pnpm add dsh-taiwind
 
 ```yaml
 - insert:
-  - id: my-plugin
-    name: dsh-my-plugin
-  - id: dsh-taiwind
-    name: dsh-taiwind
+    - id: my-plugin
+      name: dsh-my-plugin
+    - id: dsh-taiwind
+      name: dsh-taiwind
 ```
 
 用户启用业务插件时，`dsh-taiwind` 将随行一起启用，而客户端半也必须有一行启用中的 Loader 条目才会被 `dsh-client-modules` 加载。
@@ -104,9 +104,9 @@ pnpm add dsh-taiwind
 
 ## ⚙️ 配置文件（可选）
 
-可在包根目录放一份 `tailwind.config.js`，或用 CSS 的 `@config` 显式引用：
+可在包根目录放一份 `tailwind.config.js`（也认 `.cjs` / `.mjs`），或用 CSS 的 `@config` 显式引用：
 
-```ts
+```js
 /** @type {import("tailwindcss").Config} */
 export default {
   darkMode: 'class',
@@ -121,12 +121,14 @@ export default {
 
 CSS 入口存在时**不会自动加载根目录 JS 配置**，需要时在 CSS 中显式写 `@config "./tailwind.config.js";`（路径相对该 CSS 文件）。
 
+配置文件按包自身的 `type` 走原生 ESM / CJS 加载：改配置本身即刻生效；`.cjs` 配置连同 `require` 的依赖一起热重载，ESM 配置 import 的模块需要重启进程生效。
+
 ## 📚 配置与限制
 
 | 项目 | 说明 |
 | --- | --- |
 | 发布 | 原始 CSS 入口及其相对导入必须进 npm 包；只发 `dist` 时一并复制，不要用展开后的构建 CSS 代替 |
-| 不支持 | npm CSS 包导入、路径别名、远程 CSS、`@plugin`、文件路径形式的 `@source`、自定义 `source(...)` 扫描目录、跨包 CSS 导入 |
+| 不支持 | TypeScript 配置（只认 `.js` / `.mjs` / `.cjs`）、npm CSS 包导入、路径别名、远程 CSS、`@plugin`、文件路径形式的 `@source`、自定义 `source(...)` 扫描目录、跨包 CSS 导入 |
 | 冲突检测 | 自定义 token、同名 `@utility` / `@custom-variant` 定义不一致会报错并指包名；非完整 CSS 语义等价判断 |
 | 主题合并 | 遵循 Tailwind 4：同 token 的 CSS 定义优先；所有插件共享全局主题，不按插件隔离 |
 | 自定义 CSS | 一起输出，但不自动限定作用域、去重或改写资源 URL；请用插件前缀选择器和可直接访问的资源地址 |

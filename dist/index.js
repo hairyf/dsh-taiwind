@@ -1,14 +1,34 @@
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { readFile, readdir, realpath } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Scanner } from "@tailwindcss/oxide";
-import { createJiti } from "jiti";
 import postcss from "postcss";
 import { compile } from "tailwindcss";
 //#region src/compiler.ts
-const configPattern = /^(?:tailwind|taiwind)\.config\.[cm]?[jt]s$/;
+const configNamePattern = /^(?:tailwind|taiwind)\.config\.[^.]+$/;
+const configPattern = /^(?:tailwind|taiwind)\.config\.[cm]?js$/;
 const bundlePattern = /\.[cm]?js$/;
+const nodeRequire = createRequire(import.meta.url);
 let cached;
+async function nativeModule(configPath, root) {
+	const extension = extname(configPath);
+	if (extension === ".mjs") return true;
+	if (extension === ".cjs") return false;
+	return JSON.parse(await readFile(join(root, "package.json"), "utf8")).type === "module";
+}
+async function loadModule(configPath, rawConfig, root) {
+	if (await nativeModule(configPath, root)) {
+		const url = pathToFileURL(configPath);
+		url.search = `?v=${createHash("sha256").update(rawConfig).digest("hex").slice(0, 16)}`;
+		const loaded = await import(url.href);
+		return loaded.default ?? loaded;
+	}
+	for (const key of Object.keys(nodeRequire.cache)) if (key.startsWith(`${root}${sep}`)) delete nodeRequire.cache[key];
+	const loaded = nodeRequire(configPath);
+	return loaded?.default ?? loaded;
+}
 function isObject(value) {
 	return value !== null && typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
@@ -151,11 +171,6 @@ async function compilePlugins(entries) {
 	const owners = /* @__PURE__ */ new Map();
 	const aliases = /* @__PURE__ */ new Map();
 	const seen = /* @__PURE__ */ new Set();
-	const jiti = createJiti(import.meta.url, {
-		moduleCache: false,
-		fsCache: false,
-		tryNative: false
-	});
 	const stylesheets = /* @__PURE__ */ new Map();
 	const cssImports = [];
 	const cssDefinitions = /* @__PURE__ */ new Map();
@@ -165,19 +180,14 @@ async function compilePlugins(entries) {
 		merged[key] = value;
 		owners.set(key, owner);
 	};
-	const loadConfig = async (configPath, owner) => {
+	const loadConfig = async (configPath, owner, root) => {
 		configPath = await realpath(configPath);
 		if (configsSeen.has(configPath)) return;
 		configsSeen.add(configPath);
 		const rawConfig = await readFile(configPath, "utf8");
 		let loaded;
 		try {
-			const evaluated = jiti.evalModule(rawConfig, {
-				filename: configPath,
-				forceTranspile: true,
-				async: false
-			});
-			loaded = evaluated?.default ?? evaluated;
+			loaded = await loadModule(configPath, rawConfig, root);
 		} catch (error) {
 			throw new Error(`${owner}: failed to load ${configPath}`, { cause: error });
 		}
@@ -236,7 +246,7 @@ async function compilePlugins(entries) {
 				const options = match[3].trim();
 				if (rule.name === "config") {
 					if (options || !id.startsWith(".")) throw new Error(`${owner}: @config requires a relative path without options`);
-					await loadConfig(resolve(dirname(path), id), owner);
+					await loadConfig(resolve(dirname(path), id), owner, root);
 					rule.remove();
 				} else if (/^tailwindcss(?:\/(?:index|theme|utilities|preflight)(?:\.css)?)?$/.test(id)) {
 					const rest = options.replace(/\blayer\((?:theme|base|utilities)\)|\bsource\(none\)/g, "").trim();
@@ -283,11 +293,12 @@ async function compilePlugins(entries) {
 			cssImports.push(await loadCss(stylesheet, root, entry.id));
 			continue;
 		}
-		const configs = (await readdir(root, { withFileTypes: true })).filter((item) => configPattern.test(item.name));
+		const configs = (await readdir(root, { withFileTypes: true })).filter((item) => configNamePattern.test(item.name));
 		if (configs.length > 1) throw new Error(`${entry.id}: multiple Tailwind configs found: ${configs.map((item) => item.name).join(", ")}`);
 		if (!configs.length) continue;
 		if (!configs[0].isFile()) throw new Error(`${entry.id}: Tailwind config must be a regular file`);
-		await loadConfig(join(root, configs[0].name), entry.id);
+		if (!configPattern.test(configs[0].name)) throw new Error(`${entry.id}: unsupported Tailwind config ${configs[0].name}; use .js, .cjs or .mjs`);
+		await loadConfig(join(root, configs[0].name), entry.id, root);
 	}
 	if (!Object.hasOwn(merged, "darkMode")) merged.darkMode = "class";
 	const theme = await readFile(new URL(import.meta.resolve("tailwindcss/theme.css")), "utf8");
