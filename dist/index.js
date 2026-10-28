@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { readFile, readdir, realpath } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Scanner } from "@tailwindcss/oxide";
@@ -138,6 +138,15 @@ async function bundles(directory) {
 	}
 	return files;
 }
+async function nestedPackage(directory) {
+	try {
+		await readFile(join(directory, "package.json"));
+		return true;
+	} catch (error) {
+		if (error.code === "ENOENT") return false;
+		throw error;
+	}
+}
 async function cssEntry(root, clientDirectory) {
 	for (const directory of /* @__PURE__ */ new Set([root, clientDirectory])) {
 		const entry = (await readdir(directory, { withFileTypes: true })).find((item) => item.name === "main.css");
@@ -155,8 +164,10 @@ async function cssEntry(root, clientDirectory) {
 				".git"
 			].includes(item.name) || item.isSymbolicLink()) continue;
 			const path = join(directory, item.name);
-			if (item.isDirectory()) await visit(path);
-			else if (item.isFile() && item.name === "main.css") found.push(path);
+			if (item.isDirectory()) {
+				if (await nestedPackage(path)) continue;
+				await visit(path);
+			} else if (item.isFile() && item.name === "main.css") found.push(path);
 		}
 	};
 	await visit(root);
@@ -165,7 +176,7 @@ async function cssEntry(root, clientDirectory) {
 }
 async function compilePlugins(entries) {
 	const hash = createHash("sha256");
-	const sources = [];
+	const bundleFiles = [];
 	const extend = Object.create(null);
 	const merged = { theme: { extend } };
 	const owners = /* @__PURE__ */ new Map();
@@ -281,12 +292,14 @@ async function compilePlugins(entries) {
 		for (const file of await bundles(dirname(path))) {
 			if (seen.has(file)) continue;
 			seen.add(file);
-			const content = await readFile(file, "utf8");
-			hash.update(JSON.stringify([file, content]));
-			sources.push({
-				content,
-				extension: extname(file).slice(1)
-			});
+			const info = await stat(file);
+			hash.update(JSON.stringify([
+				file,
+				info.mtimeMs,
+				info.ctimeMs,
+				info.size
+			]));
+			bundleFiles.push(file);
 		}
 		const stylesheet = await cssEntry(root, dirname(path));
 		if (stylesheet) {
@@ -305,7 +318,12 @@ async function compilePlugins(entries) {
 	const utilities = await readFile(new URL(import.meta.resolve("tailwindcss/utilities.css")), "utf8");
 	hash.update(JSON.stringify([theme, utilities]));
 	const digest = hash.digest("hex");
-	if (cached?.hash === digest) return cached.css;
+	if (cached?.signature === digest) return cached.css;
+	const sources = [];
+	for (const file of bundleFiles) sources.push({
+		content: await readFile(file, "utf8"),
+		extension: extname(file).slice(1)
+	});
 	const candidates = new Scanner({}).scanFiles(sources);
 	const compiler = await compile(`@layer theme, base, components, utilities;\n@layer theme {\n${theme}\n}\n${cssImports.map((path) => `@import ${JSON.stringify(path.replaceAll("\\", "/"))};`).join("\n")}\n@layer utilities {\n${utilities}\n}\n@config "dsh-taiwind:merged";`, {
 		loadModule: async (id) => {
@@ -330,7 +348,7 @@ async function compilePlugins(entries) {
 	if (compiler.sources.length || compiler.root !== null && compiler.root !== "none") throw new Error("Tailwind source(...) directory scanning is not supported; file candidates come from client bundles");
 	const css = compiler.build(candidates);
 	cached = {
-		hash: digest,
+		signature: digest,
 		css
 	};
 	return css;
@@ -338,7 +356,7 @@ async function compilePlugins(entries) {
 //#endregion
 //#region src/constants.ts
 const PLUGIN_ID = "dsh-taiwind";
-const STYLESHEET_PATH = "plugins/dsh-taiwind.css";
+const STYLESHEET_PATH = "plugins/taiwind.css";
 const POLL_INTERVAL_MS = 2e3;
 //#endregion
 //#region src/index.ts
@@ -351,7 +369,7 @@ const inject = [
 async function apply(ctx) {
 	let css = "";
 	let etag = "";
-	let failed = false;
+	let failed = true;
 	let disposed = false;
 	let generation = 0;
 	let pending;
@@ -385,23 +403,24 @@ async function apply(ctx) {
 	ctx.effect(() => () => {
 		disposed = true;
 	});
-	const update = () => {
-		refresh().catch((error) => {
-			if (disposed) return;
-			failed = true;
-			const message = error instanceof Error ? error.message : String(error);
-			if (message !== lastError) {
-				lastError = message;
-				ctx.logger.warn(`${PLUGIN_ID}: ${message}; keeping previous stylesheet`);
-			}
-		});
+	const fail = (error) => {
+		if (disposed) return;
+		failed = true;
+		const message = error instanceof Error ? error.message : String(error);
+		if (message !== lastError) {
+			lastError = message;
+			ctx.logger.warn(`${PLUGIN_ID}: ${message}; keeping previous stylesheet`);
+		}
 	};
-	ctx.effect(() => ctx.clientModules.onGraphChanged(() => {
+	const update = () => {
+		refresh().catch(fail);
+	};
+	const invalidate = () => {
 		generation++;
 		update();
-	}));
-	await refresh();
-	if (disposed) return;
+	};
+	ctx.effect(() => ctx.clientModules.onGraphChanged(invalidate));
+	ctx.effect(() => ctx.clientModules.onRebuilt(invalidate));
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: `/${STYLESHEET_PATH}`,
@@ -447,6 +466,11 @@ async function apply(ctx) {
 		timer.unref();
 		return () => clearInterval(timer);
 	});
+	try {
+		await refresh();
+	} catch (error) {
+		fail(error);
+	}
 }
 //#endregion
 export { apply, inject, name };

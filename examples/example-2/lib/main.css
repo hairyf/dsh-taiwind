@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@theme {
+  --color-notes-accent: #7c3aed;
+  --container-notes-panel: 28rem;
+}
+
+@utility notes-compact {
+  padding: 3px;
+}

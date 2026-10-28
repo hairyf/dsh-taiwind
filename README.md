@@ -32,12 +32,10 @@ flowchart LR
 ## ✨ 特性
 
 - **CSS-first**：保留未编译的 `main.css`，支持 `@theme`、`@utility`、`@custom-variant`、`@apply`、`@source inline(...)`。
-- **按需扫描**：从 `clientModules.graph()` 取当前客户端包，`clientPath(id)` 定位构建产物，不依赖插件源码。
 - **官方编译器**：Tailwind 扫描器提取候选类，统一编译；不加载 Preflight，不重置宿主界面。
-- **单一 style**：首屏注入 `<head>`，客户端接管同一个 `<style data-plugin="dsh-taiwind" data-plugin-css="utilities">`。
-- **自动收缩**：删除类名、分包或卸载插件后，下次成功编译即收缩；无磁盘缓存。
-- **失败保留**：运行期编译失败返回 503，已打开页面保留上一份有效样式，修复后自动恢复。
-- **条件请求**：带 ETag 的 CSS 接口，命中返回 304；插件图变化立即刷新，另每两秒检查产物与配置。
+- **单一入口**：首屏注入 `<head>`，客户端接管同一个 `<style data-plugin="dsh-taiwind" data-plugin-css="utilities">`。
+- **热更新**：插件安装/卸载/启停，或客户端产物、`main.css` 改动后都会自动重新编译；已打开的页面无需刷新即可换上新样式，也不必重启宿主。
+- **条件请求**：带 ETag 的 CSS 接口，命中返回 304；内容没变就不读产物、不跑 Tailwind。
 - **完整清理**：停用移除路由、监听、定时器与客户端样式，并取消进行中的请求。
 
 ## 🚀 快速开始
@@ -60,7 +58,7 @@ pnpm add dsh-taiwind
 
 用户启用业务插件时，`dsh-taiwind` 将随行一起启用，而客户端半也必须有一行启用中的 Loader 条目才会被 `dsh-client-modules` 加载。
 
-- 它没有界面、没有工具，唯一产物是共享样式接口 `plugins/dsh-taiwind.css` 和页面上的一个 `<style data-plugin="dsh-taiwind">`。
+- 它没有界面、没有工具，唯一产物是共享样式接口 `plugins/taiwind.css` 和页面上的一个 `<style data-plugin="dsh-taiwind">`。
 - 宿主半要求 `clientModules`、`webServer`、`connection` 三件服务齐备。
 - 扫描范围是当前客户端图里所有插件的构建产物，插件图变化会自动触发重新编译。
 
@@ -86,8 +84,9 @@ pnpm add dsh-taiwind
 入口发现顺序：
 
 1. 包根目录的 `main.css`
-2. 客户端入口同目录的 `client/main.css`
-3. 找到多个会明确报错，不任意选择
+2. 客户端入口同目录的 `main.css`（如 `client/main.css`）
+3. 以上都没有时，在包内查找 `main.css`；
+4. 找到多个会明确报错，不任意选择
 
 ### 3. 发布时携带样式文件
 

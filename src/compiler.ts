@@ -1,6 +1,6 @@
 import type { Config } from 'tailwindcss'
 import { createHash } from 'node:crypto'
-import { readdir, readFile, realpath } from 'node:fs/promises'
+import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -15,7 +15,7 @@ const configNamePattern = /^(?:tailwind|taiwind)\.config\.[^.]+$/
 const configPattern = /^(?:tailwind|taiwind)\.config\.[cm]?js$/
 const bundlePattern = /\.[cm]?js$/
 const nodeRequire = createRequire(import.meta.url)
-let cached: { hash: string, css: string } | undefined
+let cached: { signature: string, css: string } | undefined
 
 async function nativeModule(configPath: string, root: string): Promise<boolean> {
   const extension = extname(configPath)
@@ -175,6 +175,18 @@ async function bundles(directory: string): Promise<string[]> {
   return files
 }
 
+async function nestedPackage(directory: string): Promise<boolean> {
+  try {
+    await readFile(join(directory, 'package.json'))
+    return true
+  }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return false
+    throw error
+  }
+}
+
 async function cssEntry(root: string, clientDirectory: string): Promise<string | undefined> {
   for (const directory of new Set([root, clientDirectory])) {
     const items = await readdir(directory, { withFileTypes: true })
@@ -191,10 +203,14 @@ async function cssEntry(root: string, clientDirectory: string): Promise<string |
       if (['node_modules', 'archive', '.git'].includes(item.name) || item.isSymbolicLink())
         continue
       const path = join(directory, item.name)
-      if (item.isDirectory())
+      if (item.isDirectory()) {
+        if (await nestedPackage(path))
+          continue
         await visit(path)
-      else if (item.isFile() && item.name === 'main.css')
+      }
+      else if (item.isFile() && item.name === 'main.css') {
         found.push(path)
+      }
     }
   }
   await visit(root)
@@ -205,7 +221,7 @@ async function cssEntry(root: string, clientDirectory: string): Promise<string |
 
 export async function compilePlugins(entries: { id: string, path: string }[]): Promise<string> {
   const hash = createHash('sha256')
-  const sources: { content: string, extension: string }[] = []
+  const bundleFiles: string[] = []
   const extend: ObjectData = Object.create(null)
   const merged: ObjectData = { theme: { extend } }
   const owners = new Map<string, string>()
@@ -324,13 +340,14 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
     const path = await realpath(resolve(entry.path))
     const root = await packageRoot(path, entry.id)
     hash.update(JSON.stringify([entry.id, path]))
+    // ponytail: 巡检只做 stat，内容没变就不读产物、不跑 Tailwind；改动时 mtime/ctime/size 必变。
     for (const file of await bundles(dirname(path))) {
       if (seen.has(file))
         continue
       seen.add(file)
-      const content = await readFile(file, 'utf8')
-      hash.update(JSON.stringify([file, content]))
-      sources.push({ content, extension: extname(file).slice(1) })
+      const info = await stat(file)
+      hash.update(JSON.stringify([file, info.mtimeMs, info.ctimeMs, info.size]))
+      bundleFiles.push(file)
     }
     const stylesheet = await cssEntry(root, dirname(path))
     if (stylesheet) {
@@ -354,8 +371,11 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   const utilities = await readFile(new URL(import.meta.resolve('tailwindcss/utilities.css')), 'utf8')
   hash.update(JSON.stringify([theme, utilities]))
   const digest = hash.digest('hex')
-  if (cached?.hash === digest)
+  if (cached?.signature === digest)
     return cached.css
+  const sources: { content: string, extension: string }[] = []
+  for (const file of bundleFiles)
+    sources.push({ content: await readFile(file, 'utf8'), extension: extname(file).slice(1) })
   const scanner = new Scanner({})
   const candidates = scanner.scanFiles(sources)
   const imports = cssImports.map(path => `@import ${JSON.stringify(path.replaceAll('\\', '/'))};`).join('\n')
@@ -376,6 +396,6 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   if (compiler.sources.length || (compiler.root !== null && compiler.root !== 'none'))
     throw new Error('Tailwind source(...) directory scanning is not supported; file candidates come from client bundles')
   const css = compiler.build(candidates)
-  cached = { hash: digest, css }
+  cached = { signature: digest, css }
   return css
 }

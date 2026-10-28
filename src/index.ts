@@ -9,7 +9,7 @@ export const inject = ['clientModules', 'webServer', 'connection']
 export async function apply(ctx: HostContext): Promise<void> {
   let css = ''
   let etag = ''
-  let failed = false
+  let failed = true
   let disposed = false
   let generation = 0
   let pending: Promise<void> | undefined
@@ -46,26 +46,28 @@ export async function apply(ctx: HostContext): Promise<void> {
     disposed = true
   })
 
-  const update = (): void => {
-    void refresh().catch((error: unknown) => {
-      if (disposed)
-        return
-      failed = true
-      const message = error instanceof Error ? error.message : String(error)
-      if (message !== lastError) {
-        lastError = message
-        ctx.logger.warn(`${PLUGIN_ID}: ${message}; keeping previous stylesheet`)
-      }
-    })
+  const fail = (error: unknown): void => {
+    if (disposed)
+      return
+    failed = true
+    const message = error instanceof Error ? error.message : String(error)
+    if (message !== lastError) {
+      lastError = message
+      ctx.logger.warn(`${PLUGIN_ID}: ${message}; keeping previous stylesheet`)
+    }
   }
 
-  ctx.effect(() => ctx.clientModules.onGraphChanged(() => {
+  const update = (): void => {
+    void refresh().catch(fail)
+  }
+
+  const invalidate = (): void => {
     generation++
     update()
-  }))
-  await refresh()
-  if (disposed)
-    return
+  }
+
+  ctx.effect(() => ctx.clientModules.onGraphChanged(invalidate))
+  ctx.effect(() => ctx.clientModules.onRebuilt(invalidate))
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -108,9 +110,17 @@ export async function apply(ctx: HostContext): Promise<void> {
       html: `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, '<\\/style')}</style>`,
     })
   })
+
   ctx.effect(() => {
     const timer = setInterval(update, POLL_INTERVAL_MS)
     timer.unref()
     return () => clearInterval(timer)
   })
+
+  try {
+    await refresh()
+  }
+  catch (error) {
+    fail(error)
+  }
 }

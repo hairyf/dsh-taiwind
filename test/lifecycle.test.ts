@@ -41,6 +41,7 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
         graphChanged = callback
         return unsubscribe
       },
+      onRebuilt: () => () => {},
     },
     connection: { requestRejection: rejection },
     webServer: {
@@ -105,6 +106,99 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
   expect(vi.getTimerCount()).toBe(0)
 })
 
+it('keeps the route alive and recovers when the first compilation fails', async () => {
+  let route: any
+  let inject: any
+  const warn = vi.fn()
+  compile.mockRejectedValueOnce(new Error('multiple main.css entries found'))
+  const ctx = {
+    effect(callback: () => () => void) { disposers.push(callback()) },
+    on(_event: string, callback: unknown) { inject = callback },
+    logger: { warn },
+    clientModules: {
+      graph: () => ({ entries: [{ id: 'first' }] }),
+      clientPath: (id: string) => `/plugins/${id}/dist/client.js`,
+      onGraphChanged: () => () => {},
+      onRebuilt: () => () => {},
+    },
+    connection: { requestRejection: (): undefined => undefined },
+    webServer: {
+      register(value: unknown) {
+        route = value
+        return () => {}
+      },
+    },
+  } as unknown as HostContext
+  await apply(ctx)
+
+  const request = () => {
+    let status = 0
+    let body: string | undefined
+    route.handler({ method: 'GET', headers: {} }, {
+      setHeader() {},
+      writeHead(value: number) { status = value },
+      end(value?: string) { body = value },
+    })
+    return { status, body }
+  }
+  const rows: { html: string }[] = []
+  inject(rows)
+  expect(rows).toHaveLength(1)
+  expect(rows[0].html).toContain('<style data-plugin="dsh-taiwind"')
+  expect(rows[0].html).not.toContain('.w-full')
+  expect(request().status).toBe(503)
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('multiple main.css entries found'))
+
+  compile.mockResolvedValue('.w-full { width: 100%; }')
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(request().status).toBe(200)
+  expect(request().body).toContain('.w-full')
+})
+
+it('recompiles as soon as a client bundle is rebuilt', async () => {
+  let route: any
+  let rebuilt: ((id: string, rev: string) => void) | undefined
+  compile.mockResolvedValueOnce('.boot { color: red; }')
+  const ctx = {
+    effect(callback: () => () => void) { disposers.push(callback()) },
+    on() {},
+    logger: { warn: vi.fn() },
+    clientModules: {
+      graph: () => ({ entries: [{ id: 'first' }] }),
+      clientPath: (id: string) => `/plugins/${id}/dist/client.js`,
+      onGraphChanged: () => () => {},
+      onRebuilt(callback: (id: string, rev: string) => void) {
+        rebuilt = callback
+        return () => {}
+      },
+    },
+    connection: { requestRejection: (): undefined => undefined },
+    webServer: {
+      register(value: unknown) {
+        route = value
+        return () => {}
+      },
+    },
+  } as unknown as HostContext
+  await apply(ctx)
+
+  const body = (): string | undefined => {
+    let text: string | undefined
+    route.handler({ method: 'GET', headers: {} }, {
+      setHeader() {},
+      writeHead() {},
+      end(value?: string) { text = value },
+    })
+    return text
+  }
+  expect(body()).toContain('.boot')
+
+  compile.mockResolvedValue('.rebuilt { color: blue; }')
+  rebuilt?.('first', 'rev-2')
+  await vi.advanceTimersByTimeAsync(0)
+  expect(body()).toContain('.rebuilt')
+})
+
 it('discards stale compilation when the graph changes during activation', async () => {
   let resolve!: (value: string) => void
   compile.mockReturnValueOnce(new Promise((done) => {
@@ -124,6 +218,7 @@ it('discards stale compilation when the graph changes during activation', async 
         changed = callback
         return () => {}
       },
+      onRebuilt: () => () => {},
     },
     webServer: { register: () => () => {} },
   } as unknown as HostContext
@@ -159,7 +254,7 @@ it('adopts the boot style, conditionally refreshes it, preserves it on failure, 
   await vi.advanceTimersByTimeAsync(0)
   expect(createElement).not.toHaveBeenCalled()
   expect(append).not.toHaveBeenCalled()
-  expect(String(fetcher.mock.calls[0][0])).toBe('https://example.test/prefix/plugins/dsh-taiwind.css')
+  expect(String(fetcher.mock.calls[0][0])).toBe('https://example.test/prefix/plugins/taiwind.css')
   expect(style.textContent).toBe('.w-full {}')
   await vi.advanceTimersByTimeAsync(4000)
   expect(fetcher.mock.calls[1][1].headers).toEqual({ 'If-None-Match': '"one"' })

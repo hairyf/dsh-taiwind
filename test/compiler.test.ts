@@ -77,6 +77,17 @@ describe('compilePlugins', () => {
     expect(removed).not.toContain('.notes-card')
   })
 
+  it('ignores stylesheet entries owned by nested packages', async () => {
+    const first = await plugin('first', '"w-full"')
+    const nested = join(first.root, 'examples', 'nested')
+    await mkdir(join(nested, 'lib'), { recursive: true })
+    await writeFile(join(nested, 'package.json'), JSON.stringify({ name: 'nested', type: 'module' }))
+    await writeFile(join(nested, 'lib', 'main.css'), '@theme { --color-nested: red; }')
+    const css = await compilePlugins([first])
+    expect(css).toContain('.w-full')
+    expect(css).not.toContain('--color-nested')
+  })
+
   it('prefers root main.css over a compiled copy and ignores implicit JS config', async () => {
     const first = await plugin('first', '"w-panel w-legacy"', 'throw new Error("must not execute")')
     await writeFile(join(first.root, 'main.css'), '@import "tailwindcss"; @theme inline { --container-panel: 41px; }')
@@ -174,6 +185,15 @@ describe('compilePlugins', () => {
     expect(css).toContain('!important')
     await writeFile(join(second.root, 'tailwind.config.mjs'), 'export default { prefix: "other" }')
     await expect(compilePlugins([first, second])).rejects.toThrow(/conflict at prefix.*first.*second/)
+  })
+
+  it('re-reads a bundle after an edit that keeps its byte length', async () => {
+    const first = await plugin('first', '"w-xl"')
+    expect(await compilePlugins([first])).toContain('.w-xl')
+    await writeFile(first.path, '"w-lg"')
+    const css = await compilePlugins([first])
+    expect(css).toContain('.w-lg')
+    expect(css).not.toContain('.w-xl')
   })
 
   it('shrinks after class removal, chunk removal, and plugin removal', async () => {
