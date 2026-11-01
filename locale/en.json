@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Shared Tailwind CSS",
-    "description": "Combines client bundle utility classes into one stylesheet, with per-plugin static Tailwind configuration."
+    "title": "Tailwind Styles",
+    "description": "Client-plugin tool with per-plugin static Tailwind configuration that builds one deduplicated stylesheet; disabling it breaks plugin styles."
   }
 }
