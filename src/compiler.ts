@@ -194,7 +194,7 @@ async function cssEntry(root: string, owner: string): Promise<string | undefined
   return path
 }
 
-export async function compilePlugins(entries: { id: string, path: string }[]): Promise<string> {
+export async function compilePlugins(entries: { id: string, path: string }[], onWarning?: (message: string) => void): Promise<string> {
   const hash = createHash('sha256')
   const bundleFiles: string[] = []
   const extend: ObjectData = Object.create(null)
@@ -205,6 +205,7 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   const stylesheets = new Map<string, string>()
   const cssImports: string[] = []
   const cssDefinitions = new Map<string, { value: string, owner: string }>()
+  const warnings = new Set<string>()
   const configsSeen = new Set<string>()
   const setGlobal = (key: string, value: Data, owner: string): void => {
     if (Object.hasOwn(merged, key) && canonical(merged[key]) !== canonical(value))
@@ -240,7 +241,7 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   const checkDefinition = (key: string, value: string, owner: string): void => {
     const previous = cssDefinitions.get(key)
     if (previous && previous.owner !== owner && previous.value !== value)
-      throw new Error(`Tailwind CSS conflict at ${key}: ${previous.owner} and ${owner}`)
+      warnings.add(`Tailwind CSS conflict at ${key}: ${previous.owner} and ${owner}; merging in plugin order`)
     cssDefinitions.set(key, { value, owner })
   }
   const loadCss = async (filename: string, root: string, owner: string, ancestors: string[] = []): Promise<string> => {
@@ -346,6 +347,8 @@ export async function compilePlugins(entries: { id: string, path: string }[]): P
   const utilities = await readFile(new URL(import.meta.resolve('tailwindcss/utilities.css')), 'utf8')
   hash.update(JSON.stringify([theme, utilities]))
   const digest = hash.digest('hex')
+  for (const warning of warnings)
+    onWarning?.(warning)
   if (cached?.signature === digest)
     return cached.css
   const sources: { content: string, extension: string }[] = []

@@ -149,7 +149,7 @@ async function cssEntry(root, owner) {
 	if (!await stat(path).then((info) => info.isFile(), () => false)) throw new Error(`${owner}: dsh.taiwind entry not found: ${entry}`);
 	return path;
 }
-async function compilePlugins(entries) {
+async function compilePlugins(entries, onWarning) {
 	const hash = createHash("sha256");
 	const bundleFiles = [];
 	const extend = Object.create(null);
@@ -160,6 +160,7 @@ async function compilePlugins(entries) {
 	const stylesheets = /* @__PURE__ */ new Map();
 	const cssImports = [];
 	const cssDefinitions = /* @__PURE__ */ new Map();
+	const warnings = /* @__PURE__ */ new Set();
 	const configsSeen = /* @__PURE__ */ new Set();
 	const setGlobal = (key, value, owner) => {
 		if (Object.hasOwn(merged, key) && canonical(merged[key]) !== canonical(value)) throw new Error(`Tailwind global configuration conflict at ${key}: ${owners.get(key)} and ${owner}`);
@@ -196,7 +197,7 @@ async function compilePlugins(entries) {
 	};
 	const checkDefinition = (key, value, owner) => {
 		const previous = cssDefinitions.get(key);
-		if (previous && previous.owner !== owner && previous.value !== value) throw new Error(`Tailwind CSS conflict at ${key}: ${previous.owner} and ${owner}`);
+		if (previous && previous.owner !== owner && previous.value !== value) warnings.add(`Tailwind CSS conflict at ${key}: ${previous.owner} and ${owner}; merging in plugin order`);
 		cssDefinitions.set(key, {
 			value,
 			owner
@@ -293,6 +294,7 @@ async function compilePlugins(entries) {
 	const utilities = await readFile(new URL(import.meta.resolve("tailwindcss/utilities.css")), "utf8");
 	hash.update(JSON.stringify([theme, utilities]));
 	const digest = hash.digest("hex");
+	for (const warning of warnings) onWarning?.(warning);
 	if (cached?.signature === digest) return cached.css;
 	const sources = [];
 	for (const file of bundleFiles) sources.push({
@@ -354,20 +356,24 @@ async function apply(ctx) {
 		pending = (async () => {
 			while (true) {
 				const current = generation;
-				const compiled = await compilePlugins(ctx.clientModules.graph().entries.map(({ id }) => {
+				const entries = ctx.clientModules.graph().entries.map(({ id }) => {
 					const path = ctx.clientModules.clientPath(id);
 					if (!path) throw new Error(`Missing client bundle: ${id}`);
 					return {
 						id,
 						path
 					};
-				}));
+				});
+				const warnings = [];
+				const compiled = await compilePlugins(entries, (message) => warnings.push(message));
 				if (disposed) return;
 				if (generation !== current) continue;
 				css = compiled;
 				etag = `"${createHash("sha256").update(css).digest("hex")}"`;
 				failed = false;
-				lastError = "";
+				const warning = warnings.join("\n");
+				if (warning && warning !== lastError) ctx.logger.warn(`${PLUGIN_ID}: ${warning}`);
+				lastError = warning;
 				break;
 			}
 		})().finally(() => {

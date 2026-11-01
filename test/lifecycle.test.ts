@@ -29,6 +29,10 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
   const unregister = vi.fn()
   const unsubscribe = vi.fn()
   const warn = vi.fn()
+  compile.mockImplementation(async (_entries, onWarning) => {
+    onWarning?.('Tailwind CSS conflict at --color-brand: first and second; merging in plugin order')
+    return '.w-full { width: 100%; }'
+  })
   const rejection = vi.fn((): number | undefined => undefined)
   const ctx = {
     effect(callback: () => () => void) { disposers.push(callback()) },
@@ -52,7 +56,7 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
     },
   } as unknown as HostContext
   await apply(ctx)
-  expect(compile).toHaveBeenCalledWith([{ id: 'first', path: '/plugins/first/dist/client.js' }])
+  expect(compile).toHaveBeenCalledWith([{ id: 'first', path: '/plugins/first/dist/client.js' }], expect.any(Function))
 
   const request = (method = 'GET', tag?: string) => {
     const headers: Record<string, string> = {}
@@ -83,6 +87,10 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
   expect(rows).toHaveLength(1)
   expect(rows[0].html).toContain('<style data-plugin="dsh-taiwind"')
   expect(rows[0].html).toContain('.w-full')
+  expect(warn).toHaveBeenCalledWith('dsh-taiwind: Tailwind CSS conflict at --color-brand: first and second; merging in plugin order')
+  graphChanged()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(warn).toHaveBeenCalledTimes(1)
   compile.mockRejectedValueOnce(new Error('invalid config'))
   graphChanged()
   await vi.advanceTimersByTimeAsync(0)
@@ -90,12 +98,12 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
   const stale: { html: string }[] = []
   inject(stale)
   expect(stale[0].html).toContain('.w-full')
-  expect(warn).toHaveBeenCalledTimes(1)
+  expect(warn).toHaveBeenCalledTimes(2)
 
   entries = []
   compile.mockResolvedValue('.w-xl { width: 36rem; }')
   await vi.advanceTimersByTimeAsync(2000)
-  expect(compile).toHaveBeenLastCalledWith([])
+  expect(compile).toHaveBeenLastCalledWith([], expect.any(Function))
   const updated = request()
   expect(updated.status).toBe(200)
   expect(updated.body).toContain('.w-xl')
@@ -228,7 +236,7 @@ it('discards stale compilation when the graph changes during activation', async 
   resolve('.removed {}')
   await activation
   expect(compile).toHaveBeenCalledTimes(2)
-  expect(compile).toHaveBeenLastCalledWith([])
+  expect(compile).toHaveBeenLastCalledWith([], expect.any(Function))
   const rows: { html: string }[] = []
   inject(rows)
   expect(rows[0].html).not.toContain('.removed')

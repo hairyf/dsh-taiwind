@@ -117,14 +117,31 @@ describe('compilePlugins', () => {
     expect(css).not.toContain('.not-emitted')
   })
 
-  it('reports cross-plugin CSS definition conflicts instead of silently changing another plugin', async () => {
-    const first = await plugin('first', '"bg-brand compact"', undefined, undefined, 'main.css')
-    const second = await plugin('second', '"bg-brand compact"', undefined, undefined, 'main.css')
-    await writeFile(join(first.root, 'main.css'), '@theme { --color-brand: red; } @utility compact { padding: 3px; }')
-    await writeFile(join(second.root, 'main.css'), '@theme { --color-brand: blue; }')
-    await expect(compilePlugins([first, second])).rejects.toThrow(/CSS conflict.*--color-brand.*first.*second/)
-    await writeFile(join(second.root, 'main.css'), '@utility compact { padding: 4px; }')
-    await expect(compilePlugins([first, second])).rejects.toThrow(/CSS conflict.*@utility compact.*first.*second/)
+  it('merges conflicting CSS definitions in stable order and reports both plugins', async () => {
+    const first = await plugin('first', '"bg-brand compact panel:w-full"', undefined, undefined, 'main.css')
+    const second = await plugin('second', '"bg-brand compact h-full"', undefined, undefined, 'main.css')
+    await writeFile(join(first.root, 'main.css'), '@theme inline { --color-brand: red; } @utility compact { padding: 3px; } @custom-variant panel (&:where(.first *));')
+    await writeFile(join(second.root, 'main.css'), '@theme { --color-brand: blue; --color-notes: green; } @utility compact { padding: 4px; } @utility notes { margin: 7px; } @custom-variant panel (&:where(.second *)); @source inline("bg-notes notes");')
+    const warnings: string[] = []
+    const css = await compilePlugins([second, first], message => warnings.push(message))
+    expect(css).toContain('--color-brand: blue')
+    expect(css).not.toContain('--color-brand: red')
+    expect(css).toContain('padding: 3px')
+    expect(css).toContain('padding: 4px')
+    expect(css.indexOf('padding: 3px')).toBeLessThan(css.indexOf('padding: 4px'))
+    expect(css).toContain('.second')
+    expect(css).not.toContain('.first')
+    expect(css).toContain('--color-notes: green')
+    expect(css).toContain('margin: 7px')
+    expect(css).toContain('.h-full')
+    expect(warnings).toEqual([
+      'Tailwind CSS conflict at --color-brand: first and second; merging in plugin order',
+      'Tailwind CSS conflict at @utility compact: first and second; merging in plugin order',
+      'Tailwind CSS conflict at @custom-variant panel: first and second; merging in plugin order',
+    ])
+    const cachedWarnings: string[] = []
+    expect(await compilePlugins([first, second], message => cachedWarnings.push(message))).toBe(css)
+    expect(cachedWarnings).toEqual(warnings)
   })
 
   it('rejects invalid declarations, circular imports and unsupported directives', async () => {

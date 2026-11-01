@@ -27,7 +27,8 @@ export async function apply(ctx: HostContext): Promise<void> {
             throw new Error(`Missing client bundle: ${id}`)
           return { id, path }
         })
-        const compiled = await compilePlugins(entries)
+        const warnings: string[] = []
+        const compiled = await compilePlugins(entries, message => warnings.push(message))
         if (disposed)
           return
         if (generation !== current)
@@ -35,7 +36,10 @@ export async function apply(ctx: HostContext): Promise<void> {
         css = compiled
         etag = `"${createHash('sha256').update(css).digest('hex')}"`
         failed = false
-        lastError = ''
+        const warning = warnings.join('\n')
+        if (warning && warning !== lastError)
+          ctx.logger.warn(`${PLUGIN_ID}: ${warning}`)
+        lastError = warning
         break
       }
     })().finally(() => { pending = undefined })
