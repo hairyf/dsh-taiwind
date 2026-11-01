@@ -405,7 +405,7 @@ async function apply(ctx) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: `/${STYLESHEET_PATH}`,
-		handler: (req, res) => {
+		handler: async (req, res) => {
 			const rejection = ctx.connection.requestRejection(req);
 			if (rejection) {
 				res.writeHead(rejection);
@@ -419,6 +419,7 @@ async function apply(ctx) {
 			}
 			res.setHeader("Cache-Control", "private, no-cache");
 			res.setHeader("X-Content-Type-Options", "nosniff");
+			if (failed && pending) await pending.catch(() => {});
 			if (failed) {
 				res.writeHead(503, { "Retry-After": "2" });
 				res.end();
@@ -439,7 +440,7 @@ async function apply(ctx) {
 		rows.push({
 			kind: "html",
 			placement: "head",
-			html: `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, "<\\/style")}</style>`
+			html: css ? `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, "<\\/style")}</style>` : `<link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`
 		});
 	});
 	ctx.effect(() => {

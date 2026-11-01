@@ -1,4 +1,4 @@
-import { PLUGIN_ID, POLL_INTERVAL_MS, STYLE_SELECTOR, STYLESHEET_PATH } from '../constants'
+import { LINK_SELECTOR, PLUGIN_ID, POLL_INTERVAL_MS, STYLE_SELECTOR, STYLESHEET_PATH } from '../constants'
 
 export function mountStyles(): () => void {
   const existing = document.head.querySelector<HTMLStyleElement>(STYLE_SELECTOR)
@@ -7,6 +7,8 @@ export function mountStyles(): () => void {
   style.dataset.pluginCss = 'utilities'
   if (!existing)
     document.head.append(style)
+  // 首屏阻塞式 link 在样式接管后移除，避免同一份规则加载两遍。
+  const preloaded = document.head.querySelector<HTMLLinkElement>(LINK_SELECTOR)
 
   const controller = new AbortController()
   let etag = ''
@@ -33,6 +35,7 @@ export function mountStyles(): () => void {
         if (!disposed) {
           if (style.textContent !== css)
             style.textContent = css
+          preloaded?.remove()
           etag = response.headers.get('ETag') ?? ''
         }
       }
@@ -61,5 +64,6 @@ export function mountStyles(): () => void {
     controller.abort()
     clearTimeout(timer)
     style.remove()
+    preloaded?.remove()
   }
 }

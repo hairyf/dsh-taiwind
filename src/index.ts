@@ -76,7 +76,7 @@ export async function apply(ctx: HostContext): Promise<void> {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: `/${STYLESHEET_PATH}`,
-    handler: (req, res) => {
+    handler: async (req, res) => {
       const rejection = ctx.connection.requestRejection(req)
       if (rejection) {
         res.writeHead(rejection)
@@ -90,6 +90,8 @@ export async function apply(ctx: HostContext): Promise<void> {
       }
       res.setHeader('Cache-Control', 'private, no-cache')
       res.setHeader('X-Content-Type-Options', 'nosniff')
+      if (failed && pending)
+        await pending.catch(() => {})
       if (failed) {
         res.writeHead(503, { 'Retry-After': '2' })
         res.end()
@@ -108,10 +110,13 @@ export async function apply(ctx: HostContext): Promise<void> {
   }))
 
   ctx.on('webserver/index-inject', (rows) => {
+    // ponytail: 首屏编译未完成时用阻塞式 link 顶替空 style，避免先画出无样式页面。
     rows.push({
       kind: 'html',
       placement: 'head',
-      html: `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, '<\\/style')}</style>`,
+      html: css
+        ? `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, '<\\/style')}</style>`
+        : `<link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`,
     })
   })
 

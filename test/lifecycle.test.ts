@@ -152,7 +152,9 @@ it('keeps the route alive and recovers when the first compilation fails', async 
   const rows: { html: string }[] = []
   inject(rows)
   expect(rows).toHaveLength(1)
-  expect(rows[0].html).toContain('<style data-plugin="dsh-taiwind"')
+  // 首屏未编译时输出阻塞式 link，让浏览器等样式而不是先画出无样式页面。
+  expect(rows[0].html).toContain('<link rel="stylesheet" data-plugin="dsh-taiwind"')
+  expect(rows[0].html).toContain('plugins/taiwind.css')
   expect(rows[0].html).not.toContain('.w-full')
   expect(request().status).toBe(503)
   expect(warn).toHaveBeenCalledWith(expect.stringContaining('multiple main.css entries found'))
@@ -161,6 +163,48 @@ it('keeps the route alive and recovers when the first compilation fails', async 
   await vi.advanceTimersByTimeAsync(2000)
   expect(request().status).toBe(200)
   expect(request().body).toContain('.w-full')
+})
+
+it('holds a stylesheet request during the first compile instead of failing it', async () => {
+  let route: any
+  let resolve!: (value: string) => void
+  compile.mockReturnValueOnce(new Promise((done) => {
+    resolve = done
+  }))
+  const ctx = {
+    effect(callback: () => () => void) { disposers.push(callback()) },
+    on() {},
+    logger: { warn: vi.fn() },
+    clientModules: {
+      graph: () => ({ entries: [{ id: 'first' }] }),
+      clientPath: (id: string) => `/plugins/${id}/dist/client.js`,
+      onGraphChanged: () => () => {},
+      onRebuilt: () => () => {},
+    },
+    connection: { requestRejection: (): undefined => undefined },
+    webServer: {
+      register(value: unknown) {
+        route = value
+        return () => {}
+      },
+    },
+  } as unknown as HostContext
+  const activation = apply(ctx)
+
+  // 首屏的阻塞式 link 在编译完成前发出：请求应等待而不是 503。
+  let status = 0
+  let body: string | undefined
+  const response = route.handler({ method: 'GET', headers: {} }, {
+    setHeader() {},
+    writeHead(value: number) { status = value },
+    end(value?: string) { body = value },
+  }) as Promise<void>
+  expect(status).toBe(0)
+  resolve('.w-full { width: 100%; }')
+  await activation
+  await response
+  expect(status).toBe(200)
+  expect(body).toContain('.w-full')
 })
 
 it('recompiles as soon as a client bundle is rebuilt', async () => {
@@ -244,11 +288,12 @@ it('discards stale compilation when the graph changes during activation', async 
 
 it('adopts the boot style, conditionally refreshes it, preserves it on failure, and aborts on disposal', async () => {
   const style = { dataset: {}, textContent: '.boot {}', remove: vi.fn() }
+  const link = { remove: vi.fn() }
   const append = vi.fn()
   const createElement = vi.fn()
   vi.stubGlobal('document', {
     baseURI: 'https://example.test/prefix/',
-    head: { querySelector: () => style, append },
+    head: { querySelector: (selector: string) => selector === '[data-plugin="dsh-taiwind"][data-plugin-css="utilities"]' ? style : link, append },
     createElement,
   })
   const fetcher = vi.fn()
@@ -264,6 +309,8 @@ it('adopts the boot style, conditionally refreshes it, preserves it on failure, 
   expect(append).not.toHaveBeenCalled()
   expect(String(fetcher.mock.calls[0][0])).toBe('https://example.test/prefix/plugins/taiwind.css')
   expect(style.textContent).toBe('.w-full {}')
+  // 首屏阻塞式 link 在 style 接管后即被移除，只留一份规则。
+  expect(link.remove).toHaveBeenCalledOnce()
   await vi.advanceTimersByTimeAsync(4000)
   expect(fetcher.mock.calls[1][1].headers).toEqual({ 'If-None-Match': '"one"' })
   expect(style.textContent).toBe('.w-full {}')
