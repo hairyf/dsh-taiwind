@@ -97,7 +97,8 @@ it('serves one authenticated stylesheet, updates its ETag, and recovers without 
   expect(request().status).toBe(503)
   const stale: { html: string }[] = []
   inject(stale)
-  expect(stale[0].html).toContain('.w-full')
+  expect(stale[0].html).toContain('<link rel="stylesheet"')
+  expect(stale[0].html).toContain('id="dsh-taiwind-boot-style"')
   expect(warn).toHaveBeenCalledTimes(2)
 
   entries = []
@@ -151,7 +152,9 @@ it('keeps the route alive and recovers when the first compilation fails', async 
   }
   const rows: { html: string }[] = []
   inject(rows)
-  expect(rows).toHaveLength(1)
+  expect(rows).toHaveLength(2)
+  expect(rows[0].html).toContain('id="dsh-taiwind-boot-style"')
+  expect(rows[1].html).toContain('role="status"')
   // 首屏未编译时输出阻塞式 link，让浏览器等样式而不是先画出无样式页面。
   expect(rows[0].html).toContain('<link rel="stylesheet" data-plugin="dsh-taiwind"')
   expect(rows[0].html).toContain('plugins/taiwind.css')
@@ -286,6 +289,52 @@ it('discards stale compilation when the graph changes during activation', async 
   expect(rows[0].html).not.toContain('.removed')
 })
 
+it('hands a cold-start link over to a real style only after a successful retry', async () => {
+  const style = { tagName: 'STYLE', dataset: {}, textContent: '', remove: vi.fn() }
+  const link = { tagName: 'LINK', dataset: {}, textContent: '', remove: vi.fn() }
+  const bootStyle = { remove: vi.fn() }
+  const bootStatus = { textContent: '正在加载界面样式…', remove: vi.fn() }
+  const append = vi.fn()
+  vi.stubGlobal('document', {
+    baseURI: 'https://example.test/prefix/',
+    head: {
+      querySelector: (selector: string) => selector.startsWith('style') ? null : link,
+      append,
+    },
+    getElementById: (id: string) => id === 'dsh-taiwind-boot-style' ? bootStyle : bootStatus,
+    createElement: (tag: string) => {
+      expect(tag).toBe('style')
+      return style
+    },
+  })
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(new Response(null, { status: 503 }))
+    .mockImplementationOnce((_url, { signal }: RequestInit) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('timeout')), { once: true })
+    }))
+    .mockResolvedValueOnce(new Response('.w-full { width: 100%; }', { headers: { ETag: '"ready"' } }))
+  vi.stubGlobal('fetch', fetcher)
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
+  disposers.push(mountStyles())
+  await vi.advanceTimersByTimeAsync(0)
+  expect(append).toHaveBeenCalledExactlyOnceWith(style)
+  expect(style.textContent).toBe('')
+  expect(link.remove).not.toHaveBeenCalled()
+  expect(bootStyle.remove).not.toHaveBeenCalled()
+  expect(bootStatus.textContent).toContain('加载失败')
+  await vi.advanceTimersByTimeAsync(17000)
+  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(bootStyle.remove).not.toHaveBeenCalled()
+  expect(bootStatus.remove).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(style.textContent).toContain('.w-full')
+  expect(link.textContent).toBe('')
+  expect(link.remove).toHaveBeenCalledOnce()
+  expect(bootStyle.remove).toHaveBeenCalledOnce()
+  expect(bootStatus.remove).toHaveBeenCalledOnce()
+  expect(fetcher.mock.calls[2][1].headers).toEqual({})
+})
+
 it('adopts the boot style, conditionally refreshes it, preserves it on failure, and aborts on disposal', async () => {
   const style = { dataset: {}, textContent: '.boot {}', remove: vi.fn() }
   const link = { remove: vi.fn() }
@@ -293,7 +342,8 @@ it('adopts the boot style, conditionally refreshes it, preserves it on failure, 
   const createElement = vi.fn()
   vi.stubGlobal('document', {
     baseURI: 'https://example.test/prefix/',
-    head: { querySelector: (selector: string) => selector === '[data-plugin="dsh-taiwind"][data-plugin-css="utilities"]' ? style : link, append },
+    head: { querySelector: (selector: string) => selector === 'style[data-plugin="dsh-taiwind"][data-plugin-css="utilities"]' ? style : link, append },
+    getElementById: () => null,
     createElement,
   })
   const fetcher = vi.fn()

@@ -334,6 +334,8 @@ async function compilePlugins(entries, onWarning) {
 //#region src/constants.ts
 const PLUGIN_ID = "dsh-taiwind";
 const STYLESHEET_PATH = "plugins/taiwind.css";
+const BOOT_STYLE_ID = "dsh-taiwind-boot-style";
+const BOOT_STATUS_ID = "dsh-taiwind-boot-status";
 const POLL_INTERVAL_MS = 2e3;
 //#endregion
 //#region src/index.ts
@@ -419,7 +421,7 @@ async function apply(ctx) {
 			}
 			res.setHeader("Cache-Control", "private, no-cache");
 			res.setHeader("X-Content-Type-Options", "nosniff");
-			if (failed && pending) await pending.catch(() => {});
+			if (pending) await pending.catch(() => {});
 			if (failed) {
 				res.writeHead(503, { "Retry-After": "2" });
 				res.end();
@@ -437,10 +439,16 @@ async function apply(ctx) {
 		}
 	}));
 	ctx.on("webserver/index-inject", (rows) => {
+		const ready = !failed && !pending;
 		rows.push({
 			kind: "html",
 			placement: "head",
-			html: css ? `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, "<\\/style")}</style>` : `<link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`
+			html: ready ? `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, "<\\/style")}</style>` : `<style id="${BOOT_STYLE_ID}">body{visibility:hidden!important}#${BOOT_STATUS_ID}{visibility:visible!important;position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;margin:0;background:var(--dsh-boot-bg,#fff);color:CanvasText;font:14px system-ui}body>*:not(#${BOOT_STATUS_ID}){display:none!important}</style><link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`
+		});
+		if (!ready) rows.push({
+			kind: "html",
+			placement: "body",
+			html: `<div id="${BOOT_STATUS_ID}" role="status" aria-live="polite">正在加载界面样式…</div>`
 		});
 	});
 	ctx.effect(() => {

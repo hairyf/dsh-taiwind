@@ -1,7 +1,7 @@
 import type { HostContext } from './types'
 import { createHash } from 'node:crypto'
 import { compilePlugins } from './compiler'
-import { PLUGIN_ID, POLL_INTERVAL_MS, STYLESHEET_PATH } from './constants'
+import { BOOT_STATUS_ID, BOOT_STYLE_ID, PLUGIN_ID, POLL_INTERVAL_MS, STYLESHEET_PATH } from './constants'
 
 export const name = PLUGIN_ID
 export const inject = ['clientModules', 'webServer', 'connection']
@@ -90,7 +90,7 @@ export async function apply(ctx: HostContext): Promise<void> {
       }
       res.setHeader('Cache-Control', 'private, no-cache')
       res.setHeader('X-Content-Type-Options', 'nosniff')
-      if (failed && pending)
+      if (pending)
         await pending.catch(() => {})
       if (failed) {
         res.writeHead(503, { 'Retry-After': '2' })
@@ -110,14 +110,21 @@ export async function apply(ctx: HostContext): Promise<void> {
   }))
 
   ctx.on('webserver/index-inject', (rows) => {
-    // ponytail: 首屏编译未完成时用阻塞式 link 顶替空 style，避免先画出无样式页面。
+    const ready = !failed && !pending
     rows.push({
       kind: 'html',
       placement: 'head',
-      html: css
+      html: ready
         ? `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, '<\\/style')}</style>`
-        : `<link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`,
+        : `<style id="${BOOT_STYLE_ID}">body{visibility:hidden!important}#${BOOT_STATUS_ID}{visibility:visible!important;position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;margin:0;background:var(--dsh-boot-bg,#fff);color:CanvasText;font:14px system-ui}body>*:not(#${BOOT_STATUS_ID}){display:none!important}</style><link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`,
     })
+    if (!ready) {
+      rows.push({
+        kind: 'html',
+        placement: 'body',
+        html: `<div id="${BOOT_STATUS_ID}" role="status" aria-live="polite">正在加载界面样式…</div>`,
+      })
+    }
   })
 
   ctx.effect(() => {
