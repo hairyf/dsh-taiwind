@@ -1,4 +1,4 @@
-import { BOOT_STATUS_ID, BOOT_STYLE_ID, LINK_SELECTOR, PLUGIN_ID, POLL_INTERVAL_MS, STYLE_SELECTOR, STYLESHEET_PATH } from '../constants'
+import { BOOT_ROOT_ID, BOOT_STYLE_ID, LINK_SELECTOR, PLUGIN_ID, POLL_INTERVAL_MS, STYLE_SELECTOR, STYLESHEET_PATH } from '../constants'
 
 export function mountStyles(): () => void {
   const existing = document.head.querySelector<HTMLStyleElement>(STYLE_SELECTOR)
@@ -7,13 +7,13 @@ export function mountStyles(): () => void {
   style.dataset.pluginCss = 'utilities'
   if (!existing)
     document.head.append(style)
-  // 首屏阻塞式 link 在样式接管后移除，避免同一份规则加载两遍。
   const preloaded = document.head.querySelector<HTMLLinkElement>(LINK_SELECTOR)
   const bootStyle = document.getElementById(BOOT_STYLE_ID)
-  const bootStatus = document.getElementById(BOOT_STATUS_ID)
+  // 覆盖层根节点就是官方那套「HARNESS + 环形进度 + Loading appearance…」卡片。
+  const bootRoot = document.getElementById(BOOT_ROOT_ID)
   const reveal = (): void => {
     bootStyle?.remove()
-    bootStatus?.remove()
+    bootRoot?.remove()
   }
 
   const controller = new AbortController()
@@ -49,9 +49,10 @@ export function mountStyles(): () => void {
       lastError = ''
     }
     catch (error) {
+      // 样式取不到就降级：保留上次的样式和界面本身，只记一条 warn 继续重试。
+      // 首屏覆盖层由宿主侧 CSS 动画自行淡出，这里不接管可见性。
       if (!disposed) {
-        if (bootStatus)
-          bootStatus.textContent = '界面样式加载失败，正在重试…'
+        reveal()
         const message = error instanceof Error ? error.message : String(error)
         if (lastError !== message) {
           lastError = message

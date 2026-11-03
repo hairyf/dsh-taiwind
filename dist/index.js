@@ -1,11 +1,79 @@
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { Scanner } from "@tailwindcss/oxide";
 import postcss from "postcss";
 import { compile } from "tailwindcss";
+//#region src/constants.ts
+const PLUGIN_ID = "dsh-taiwind";
+const STYLESHEET_PATH = "plugins/taiwind.css";
+const BOOT_STYLE_ID = "dsh-taiwind-boot-style";
+const BOOT_ROOT_ID = "dsh-taiwind-boot";
+/**
+* 引导层的字标与提示。刻意是写死的英文常量，不做 i18n 查表：
+* 官方 Web boot 覆盖层同样是写死的字面量，一比一复刻才有意义。
+*/
+const BOOT_WORDMARK = "HARNESS";
+const BOOT_HINT = "Loading appearance…";
+/**
+* 宿主侧兜底轮询间隔。每 tick 只做一次纯内存的插件图签名比对（插件列表 + 各自
+* 产物版本），签名没变就立刻返回，不会触发编译；它只用来兜住漏掉的图变化事件。
+*/
+const POLL_INTERVAL_MS = 2e3;
+/** 编译产物在 `~/.dsh` 下的位置：`<home>/taiwind/styles.css`。 */
+const CACHE_DIRECTORY = "taiwind";
+const CACHE_STYLESHEET_FILE = "styles.css";
+/**
+* 首屏覆盖层的最长等待。覆盖层只用 CSS 动画淡出，不需要脚本：
+* 编译还没就绪时，界面在被遮住的状态下先画出来，到点自动揭晓。
+*/
+const BOOT_REVEAL_DELAY_MS = 4e3;
+//#endregion
+//#region src/cache.ts
+const signaturePattern = /^\/\* dsh-taiwind stylesheet signature: ([0-9a-f]{64}) \*\/\n/;
+/**
+* 编译产物落盘目录，默认 `~/.dsh/taiwind`。`$DSH_HOME` 的优先级与官方
+* `dsh-home-paths` 一致（显式配置 > `$DSH_HOME` > `~/.dsh`）。
+*/
+function stylesCacheDirectory() {
+	const home = process.env.DSH_HOME?.trim();
+	return join(home ? resolve(home) : join(homedir(), ".dsh"), CACHE_DIRECTORY);
+}
+/** 编译产物文件：`~/.dsh/taiwind/styles.css`，可直接用编辑器打开检查。 */
+function stylesCachePath() {
+	return join(stylesCacheDirectory(), CACHE_STYLESHEET_FILE);
+}
+/**
+* 读取上次编译的样式，用于首屏直接内联：有缓存就不必等本次编译。
+* 签名写在首行注释里，样式与签名同进同出，不存在「样式换了、签名还是旧的」这种半写状态。
+*/
+async function readStylesCache() {
+	try {
+		const content = await readFile(stylesCachePath(), "utf8");
+		const match = signaturePattern.exec(content);
+		if (!match) return void 0;
+		const css = content.slice(match[0].length);
+		return css ? {
+			signature: match[1],
+			css
+		} : void 0;
+	} catch {
+		return;
+	}
+}
+/** 写入编译产物：先写同目录临时文件再原子替换，读到的永远是完整文件。 */
+async function writeStylesCache(entry) {
+	const path = stylesCachePath();
+	await mkdir(stylesCacheDirectory(), { recursive: true });
+	const temporary = `${path}.${process.pid}.tmp`;
+	await writeFile(temporary, `/* dsh-taiwind stylesheet signature: ${entry.signature} */\n${entry.css}`);
+	await rename(temporary, path);
+}
+//#endregion
 //#region src/compiler.ts
 const configNamePattern = /^(?:tailwind|taiwind)\.config\.[^.]+$/;
 const configPattern = /^(?:tailwind|taiwind)\.config\.[cm]?js$/;
@@ -331,13 +399,6 @@ async function compilePlugins(entries, onWarning) {
 	return css;
 }
 //#endregion
-//#region src/constants.ts
-const PLUGIN_ID = "dsh-taiwind";
-const STYLESHEET_PATH = "plugins/taiwind.css";
-const BOOT_STYLE_ID = "dsh-taiwind-boot-style";
-const BOOT_STATUS_ID = "dsh-taiwind-boot-status";
-const POLL_INTERVAL_MS = 2e3;
-//#endregion
 //#region src/index.ts
 const name = PLUGIN_ID;
 const inject = [
@@ -345,19 +406,74 @@ const inject = [
 	"webServer",
 	"connection"
 ];
+/**
+* 首屏覆盖层，一比一复刻官方 Web boot 覆盖层（`_boot_u7vgf_3` 那套）：
+* 同样的「HARNESS 字标 + 20px 环形进度 + 12px 灰色提示」竖排卡片、同样的
+* 16px 字距 0.08em 字标、同样的 conic-gradient 旋转环，连官方那套
+* `--dsh-boot-label-*` 回退变量与 `body[data-ds-dark-theme]` 深色切换都照抄。
+* 只有三处刻意不同：类名换成插件前缀（官方的 `_boot_u7vgf_3` 是构建哈希，
+* 不可依赖）；根节点用 `position:fixed` 而不是官方的 `height:100%`——我们这段
+* head 行注入在官方样式表之前，首帧 `#root` 可能还没有高度；最后额外挂一个
+* `animation` 兜底，最坏情况晚 `BOOT_REVEAL_DELAY_MS` 毫秒自动揭晓，
+* 不可能永久白屏。
+*/
+function bootVeil() {
+	const root = `#${BOOT_ROOT_ID}`;
+	return `<style id="${BOOT_STYLE_ID}">${[
+		`${root}{--dsh-boot-label-primary:#0f1115;--dsh-boot-label-secondary:#61666b;--dsh-boot-label-tertiary:#81858c;--dsh-boot-border:rgb(0 0 0 / 10%);--dsh-boot-brand:#0f1115;position:fixed;inset:0;z-index:2147483647;margin:0;display:grid;place-items:center;background:var(--dsw-alias-bg-base,var(--dsh-boot-bg,Canvas));animation:dsh-taiwind-boot-reveal 240ms ease ${BOOT_REVEAL_DELAY_MS}ms forwards}`,
+		`body[data-ds-dark-theme] ${root}{--dsh-boot-label-primary:#f9fafb;--dsh-boot-label-secondary:#cfd3d6;--dsh-boot-label-tertiary:#adb2b8;--dsh-boot-border:rgb(255 255 255 / 12%);--dsh-boot-brand:#f9fafb}`,
+		`${root} .dsh-taiwind-boot-card{display:flex;flex-direction:column;align-items:center;gap:16px}`,
+		`${root} .dsh-taiwind-boot-wordmark{font-size:16px;line-height:24px;font-weight:600;letter-spacing:.08em;color:var(--dsw-alias-label-primary,var(--dsh-boot-label-primary))}`,
+		`${root} .dsh-taiwind-boot-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,var(--dsh-boot-label-tertiary))}`,
+		`${root} .dsh-taiwind-boot-spinner{position:relative;width:20px;height:20px;border-radius:50%;corner-shape:round;border:2px solid var(--dsw-alias-border-l2,var(--dsh-boot-border));animation:dsh-taiwind-boot-spin .8s linear infinite}`,
+		`${root} .dsh-taiwind-boot-spinner:after{content:"";position:absolute;inset:-2px;border-radius:inherit;background:conic-gradient(var(--dsw-alias-brand-primary,var(--dsh-boot-brand)) var(--dsh-boot-arc,72deg),transparent 0);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 0);mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 0)}`,
+		"@keyframes dsh-taiwind-boot-spin{to{transform:rotate(360deg)}}",
+		"@keyframes dsh-taiwind-boot-reveal{to{opacity:0;visibility:hidden}}"
+	].join("")}</style>`;
+}
+/**
+* 覆盖层标记，与官方 `zZ` 渲染出来的 DOM 同构：根 > 卡片 > 字标 / 环 / 提示。
+* 文案是写死的字面量（不做 i18n），与官方一致。
+*/
+function bootMarkup() {
+	return `<div id="${BOOT_ROOT_ID}" role="status" aria-live="polite"><div class="dsh-taiwind-boot-card"><div class="dsh-taiwind-boot-wordmark">${BOOT_WORDMARK}</div><div class="dsh-taiwind-boot-spinner" aria-hidden="true"></div><div class="dsh-taiwind-boot-hint">${BOOT_HINT}</div></div></div>`;
+}
 async function apply(ctx) {
 	let css = "";
 	let etag = "";
-	let failed = true;
 	let disposed = false;
 	let generation = 0;
 	let pending;
 	let lastError = "";
+	let lastCacheError = "";
+	let appliedSignature = "";
+	let failedSignature = "";
+	/**
+	* 当前插件图签名：每个插件一行 `id@rev`。`rev` 是客户端产物（client bundle）的
+	* 不透明版本号，由 mtime/ctime/size 推出——插件重装、升级、重新构建都会换 rev，
+	* 插件增删则直接改变行数，所以它同时覆盖了「插件列表」和「每个插件的版本」。
+	*/
+	const graphSignature = () => ctx.clientModules.graph().entries.map(({ id, rev }) => `${id}@${rev}`).sort().join("\n");
+	const persist = async (signature, content) => {
+		try {
+			await writeStylesCache({
+				signature,
+				css: content
+			});
+		} catch (error) {
+			if (disposed) return;
+			const message = error instanceof Error ? error.message : String(error);
+			if (message === lastCacheError) return;
+			lastCacheError = message;
+			ctx.logger.warn(`${PLUGIN_ID}: cannot cache stylesheet at ${stylesCachePath()}: ${message}`);
+		}
+	};
 	const refresh = () => {
 		if (pending) return pending;
 		pending = (async () => {
 			while (true) {
 				const current = generation;
+				const currentSignature = graphSignature();
 				const entries = ctx.clientModules.graph().entries.map(({ id }) => {
 					const path = ctx.clientModules.clientPath(id);
 					if (!path) throw new Error(`Missing client bundle: ${id}`);
@@ -367,12 +483,20 @@ async function apply(ctx) {
 					};
 				});
 				const warnings = [];
-				const compiled = await compilePlugins(entries, (message) => warnings.push(message));
+				let compiled;
+				try {
+					compiled = await compilePlugins(entries, (message) => warnings.push(message));
+				} catch (error) {
+					failedSignature = currentSignature;
+					throw error;
+				}
 				if (disposed) return;
 				if (generation !== current) continue;
 				css = compiled;
-				etag = `"${createHash("sha256").update(css).digest("hex")}"`;
-				failed = false;
+				appliedSignature = currentSignature;
+				failedSignature = "";
+				etag = `"${createHash("sha256").update(compiled).digest("hex")}"`;
+				persist(etag.slice(1, -1), compiled);
 				const warning = warnings.join("\n");
 				if (warning && warning !== lastError) ctx.logger.warn(`${PLUGIN_ID}: ${warning}`);
 				lastError = warning;
@@ -388,7 +512,6 @@ async function apply(ctx) {
 	});
 	const fail = (error) => {
 		if (disposed) return;
-		failed = true;
 		const message = error instanceof Error ? error.message : String(error);
 		if (message !== lastError) {
 			lastError = message;
@@ -404,6 +527,16 @@ async function apply(ctx) {
 	};
 	ctx.effect(() => ctx.clientModules.onGraphChanged(invalidate));
 	ctx.effect(() => ctx.clientModules.onRebuilt(invalidate));
+	ctx.effect(() => {
+		const timer = setInterval(() => {
+			if (disposed || pending) return;
+			const current = graphSignature();
+			if (current === appliedSignature || current === failedSignature) return;
+			invalidate();
+		}, POLL_INTERVAL_MS);
+		timer.unref();
+		return () => clearInterval(timer);
+	});
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: `/${STYLESHEET_PATH}`,
@@ -419,10 +552,10 @@ async function apply(ctx) {
 				res.end();
 				return;
 			}
-			res.setHeader("Cache-Control", "private, no-cache");
+			res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
 			res.setHeader("X-Content-Type-Options", "nosniff");
-			if (pending) await pending.catch(() => {});
-			if (failed) {
+			if (pending && !css) await pending.catch(() => {});
+			if (!css) {
 				res.writeHead(503, { "Retry-After": "2" });
 				res.end();
 				return;
@@ -439,28 +572,36 @@ async function apply(ctx) {
 		}
 	}));
 	ctx.on("webserver/index-inject", (rows) => {
-		const ready = !failed && !pending;
+		if (css) {
+			rows.push({
+				kind: "html",
+				placement: "head",
+				html: `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, "<\\/style")}</style>`
+			});
+			return;
+		}
 		rows.push({
 			kind: "html",
 			placement: "head",
-			html: ready ? `<style data-plugin="${PLUGIN_ID}" data-plugin-css="utilities">${css.replace(/<\/style/gi, "<\\/style")}</style>` : `<style id="${BOOT_STYLE_ID}">body{visibility:hidden!important}#${BOOT_STATUS_ID}{visibility:visible!important;position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;margin:0;background:var(--dsh-boot-bg,#fff);color:CanvasText;font:14px system-ui}body>*:not(#${BOOT_STATUS_ID}){display:none!important}</style><link rel="stylesheet" data-plugin="${PLUGIN_ID}" data-plugin-css="utilities" href="${STYLESHEET_PATH}">`
+			html: bootVeil()
 		});
-		if (!ready) rows.push({
+		rows.push({
 			kind: "html",
 			placement: "body",
-			html: `<div id="${BOOT_STATUS_ID}" role="status" aria-live="polite">正在加载界面样式…</div>`
+			html: bootMarkup()
 		});
 	});
-	ctx.effect(() => {
-		const timer = setInterval(update, POLL_INTERVAL_MS);
-		timer.unref();
-		return () => clearInterval(timer);
-	});
+	const compiling = refresh().catch(fail);
 	try {
-		await refresh();
+		const entry = await readStylesCache();
+		if (!disposed && entry && !css) {
+			css = entry.css;
+			etag = `"${entry.signature}"`;
+		}
 	} catch (error) {
 		fail(error);
 	}
+	if (!css) await compiling;
 }
 //#endregion
 export { apply, inject, name };
