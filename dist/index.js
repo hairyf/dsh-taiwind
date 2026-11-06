@@ -19,11 +19,6 @@ const BOOT_ROOT_ID = "dsh-taiwind-boot";
 */
 const BOOT_WORDMARK = "HARNESS";
 const BOOT_HINT = "Loading appearance…";
-/**
-* 宿主侧兜底轮询间隔。每 tick 只做一次纯内存的插件图签名比对（插件列表 + 各自
-* 产物版本），签名没变就立刻返回，不会触发编译；它只用来兜住漏掉的图变化事件。
-*/
-const POLL_INTERVAL_MS = 2e3;
 /** 编译产物在 `~/.dsh` 下的位置：`<home>/taiwind/styles.css`。 */
 const CACHE_DIRECTORY = "taiwind";
 const CACHE_STYLESHEET_FILE = "styles.css";
@@ -446,14 +441,6 @@ async function apply(ctx) {
 	let pending;
 	let lastError = "";
 	let lastCacheError = "";
-	let appliedSignature = "";
-	let failedSignature = "";
-	/**
-	* 当前插件图签名：每个插件一行 `id@rev`。`rev` 是客户端产物（client bundle）的
-	* 不透明版本号，由 mtime/ctime/size 推出——插件重装、升级、重新构建都会换 rev，
-	* 插件增删则直接改变行数，所以它同时覆盖了「插件列表」和「每个插件的版本」。
-	*/
-	const graphSignature = () => ctx.clientModules.graph().entries.map(({ id, rev }) => `${id}@${rev}`).sort().join("\n");
 	const persist = async (signature, content) => {
 		try {
 			await writeStylesCache({
@@ -473,7 +460,6 @@ async function apply(ctx) {
 		pending = (async () => {
 			while (true) {
 				const current = generation;
-				const currentSignature = graphSignature();
 				const entries = ctx.clientModules.graph().entries.map(({ id }) => {
 					const path = ctx.clientModules.clientPath(id);
 					if (!path) throw new Error(`Missing client bundle: ${id}`);
@@ -483,18 +469,10 @@ async function apply(ctx) {
 					};
 				});
 				const warnings = [];
-				let compiled;
-				try {
-					compiled = await compilePlugins(entries, (message) => warnings.push(message));
-				} catch (error) {
-					failedSignature = currentSignature;
-					throw error;
-				}
+				const compiled = await compilePlugins(entries, (message) => warnings.push(message));
 				if (disposed) return;
 				if (generation !== current) continue;
 				css = compiled;
-				appliedSignature = currentSignature;
-				failedSignature = "";
 				etag = `"${createHash("sha256").update(compiled).digest("hex")}"`;
 				persist(etag.slice(1, -1), compiled);
 				const warning = warnings.join("\n");
@@ -518,25 +496,13 @@ async function apply(ctx) {
 			ctx.logger.warn(`${PLUGIN_ID}: ${message}; keeping previous stylesheet`);
 		}
 	};
-	const update = () => {
-		refresh().catch(fail);
-	};
 	const invalidate = () => {
+		if (disposed) return;
 		generation++;
-		update();
+		refresh().catch(fail);
 	};
 	ctx.effect(() => ctx.clientModules.onGraphChanged(invalidate));
 	ctx.effect(() => ctx.clientModules.onRebuilt(invalidate));
-	ctx.effect(() => {
-		const timer = setInterval(() => {
-			if (disposed || pending) return;
-			const current = graphSignature();
-			if (current === appliedSignature || current === failedSignature) return;
-			invalidate();
-		}, POLL_INTERVAL_MS);
-		timer.unref();
-		return () => clearInterval(timer);
-	});
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: `/${STYLESHEET_PATH}`,
@@ -554,7 +520,7 @@ async function apply(ctx) {
 			}
 			res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
 			res.setHeader("X-Content-Type-Options", "nosniff");
-			if (pending && !css) await pending.catch(() => {});
+			if (pending) await pending.catch(() => {});
 			if (!css) {
 				res.writeHead(503, { "Retry-After": "2" });
 				res.end();

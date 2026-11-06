@@ -1,3 +1,4 @@
+import type { ClientContext } from '../src/client/types'
 import type { HostContext } from '../src/types'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,7 +8,6 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { stylesCachePath, writeStylesCache } from '../src/cache'
 import { mountStyles } from '../src/client/styles'
 import { compilePlugins } from '../src/compiler'
-import { POLL_INTERVAL_MS } from '../src/constants'
 import { apply } from '../src/index'
 
 vi.mock('../src/compiler', () => ({ compilePlugins: vi.fn() }))
@@ -52,6 +52,35 @@ afterEach(async () => {
     process.env.DSH_HOME = originalHome
   await removeHome(dshHome)
 })
+
+/**
+ * 假的 `ctx.modules.entries.state`：`begin()` / `settle()` 模拟页面控制器在
+ * 应用新插件图前后各发布一次同步状态。
+ */
+function graphSync() {
+  const subscribers = new Set<() => void>()
+  let syncing = false
+  const publish = (value: boolean): void => {
+    syncing = value
+    for (const listener of subscribers)
+      listener()
+  }
+  const state = {
+    getSnapshot: () => ({ syncing }),
+    subscribe(listener: () => void) {
+      subscribers.add(listener)
+      return () => subscribers.delete(listener)
+    },
+  }
+  return {
+    ctx: { effect() {}, modules: { entries: { state } } } as unknown as ClientContext,
+    /** 插件图开始应用（安装/卸载进行中）。 */
+    begin: () => publish(true),
+    /** 插件图同步收敛：这一批变化已经落到页面上了。 */
+    settle: () => publish(false),
+    listeners: () => subscribers.size,
+  }
+}
 
 it('serves one authenticated stylesheet, updates its ETag, and keeps serving cached CSS after a failed rebuild', async () => {
   let route: any
@@ -147,8 +176,7 @@ it('serves one authenticated stylesheet, updates its ETag, and keeps serving cac
   expect(stale[0].html).not.toContain('dsh-taiwind-boot-style')
   expect(warn).toHaveBeenCalledTimes(2)
 
-  // 轮询是兜底，且每 tick 只比对插件图签名：这里图变化已经由事件触发过，
-  // 签名与已应用的一致，所以再走 2 秒的 tick 也不会多编译一次。
+  // 插件卸载：图变成空，事件一到立刻重编，不需要任何定时器。
   entries = []
   compile.mockResolvedValue('.w-xl { width: 36rem; }')
   graphChanged()
@@ -220,7 +248,7 @@ it('shows a non-blocking CSS veil when the first compilation fails with no cache
   expect((await request()).status).toBe(503)
   expect(warn).toHaveBeenCalledWith(expect.stringContaining('multiple main.css entries found'))
 
-  // 下一次重编译由图变化事件触发（轮询兜底只在签名变了时才动手）。
+  // 下一次重编译由图变化事件触发。
   compile.mockResolvedValue('.w-full { width: 100%; }')
   graphChanged()
   await vi.advanceTimersByTimeAsync(0)
@@ -313,8 +341,10 @@ it('recompiles as soon as a client bundle is rebuilt', async () => {
   expect(await body()).toContain('.rebuilt')
 })
 
-it('polls cheaply and recompiles only when the plugin graph signature changes', async () => {
+it('recompiles on plugin install and uninstall, without any polling', async () => {
   let route: any
+  let graphChanged = (): void => {}
+  let rebuilt = (): void => {}
   let entries = [{ id: 'first', rev: 'rev-1' }]
   compile.mockResolvedValue('.w-full { width: 100%; }')
   const ctx = {
@@ -324,8 +354,14 @@ it('polls cheaply and recompiles only when the plugin graph signature changes', 
     clientModules: {
       graph: () => ({ entries }),
       clientPath: (id: string) => `/plugins/${id}/dist/client.js`,
-      onGraphChanged: () => () => {},
-      onRebuilt: () => () => {},
+      onGraphChanged(callback: () => void) {
+        graphChanged = callback
+        return () => {}
+      },
+      onRebuilt(callback: () => void) {
+        rebuilt = callback
+        return () => {}
+      },
     },
     connection: { requestRejection: (): undefined => undefined },
     webServer: {
@@ -338,47 +374,72 @@ it('polls cheaply and recompiles only when the plugin graph signature changes', 
   await apply(ctx)
   expect(compile).toHaveBeenCalledTimes(1)
 
-  // 插件图和版本都没变：每个 tick 只做一次内存比对，不碰编译器。
-  await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+  const body = async (): Promise<string | undefined> => {
+    let text: string | undefined
+    await route.handler({ method: 'GET', headers: {} }, {
+      setHeader() {},
+      writeHead() {},
+      end(value?: string) { text = value },
+    })
+    return text
+  }
+
+  // 稳态：没有任何定时器，所以空闲多久都不会多编译一次。
+  await vi.advanceTimersByTimeAsync(60000)
   expect(compile).toHaveBeenCalledTimes(1)
+  expect(vi.getTimerCount()).toBe(0)
 
-  // 某个插件的产物版本变了：下一 tick 自愈，不需要任何事件。
+  // 安装插件：图新增一行，graph 事件触发一次重编，接口立刻带上新样式。
   compile.mockResolvedValue('.w-xl { width: 36rem; }')
-  entries = [{ id: 'first', rev: 'rev-2' }]
-  await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+  entries = [{ id: 'first', rev: 'rev-1' }, { id: 'notes', rev: 'rev-1' }]
+  graphChanged()
+  await vi.advanceTimersByTimeAsync(0)
   expect(compile).toHaveBeenCalledTimes(2)
-  let text: string | undefined
-  await route.handler({ method: 'GET', headers: {} }, {
-    setHeader() {},
-    writeHead() {},
-    end(value?: string) { text = value },
-  })
-  expect(text).toContain('.w-xl')
-
-  // 插件列表变了（新增一个插件）：同样能在下一 tick 自愈。
-  compile.mockResolvedValue('.w-grid { display: grid; }')
-  entries = [{ id: 'first', rev: 'rev-2' }, { id: 'second', rev: 'rev-1' }]
-  await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
-  expect(compile).toHaveBeenCalledTimes(3)
   expect(compile).toHaveBeenLastCalledWith(
     [
       { id: 'first', path: '/plugins/first/dist/client.js' },
-      { id: 'second', path: '/plugins/second/dist/client.js' },
+      { id: 'notes', path: '/plugins/notes/dist/client.js' },
     ],
     expect.any(Function),
   )
+  expect(await body()).toContain('.w-xl')
 
-  // 同一个签名反复失败时不再每 tick 重烧编译，只在签名变化后重试。
+  // 同一次产物变化经常先报 rebuilt 再报 graph：重复事件无害，
+  // 内容没变时 compilePlugins 内部的内容哈希直接命中，不会再跑一遍 Tailwind。
+  rebuilt()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await body()).toContain('.w-xl')
+
+  // 卸载插件：图回到一行，同样由事件触发重编。
+  compile.mockResolvedValue('.w-grid { display: grid; }')
+  entries = [{ id: 'first', rev: 'rev-1' }]
+  graphChanged()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(compile).toHaveBeenLastCalledWith([{ id: 'first', path: '/plugins/first/dist/client.js' }], expect.any(Function))
+  expect(await body()).toContain('.w-grid')
+
+  // 产物重建不走 graph、只报 rebuilt：同样必须重编。
+  compile.mockResolvedValue('.w-sr { position: absolute; }')
+  entries = [{ id: 'first', rev: 'rev-2' }]
+  rebuilt()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await body()).toContain('.w-sr')
+
+  // 编译失败时继续下发上一版（降级），坏配置不会把界面打死。
   compile.mockRejectedValue(new Error('invalid config'))
   entries = [{ id: 'first', rev: 'rev-3' }]
-  await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
-  expect(compile).toHaveBeenCalledTimes(4)
-  await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
-  expect(compile).toHaveBeenCalledTimes(4)
-  compile.mockResolvedValue('.w-sr { position: absolute; }')
+  rebuilt()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await body()).toContain('.w-sr')
+
+  // 签名/配置修好后，下一次事件立刻恢复。
+  compile.mockResolvedValue('.w-max { width: max-content; }')
   entries = [{ id: 'first', rev: 'rev-4' }]
-  await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
-  expect(compile).toHaveBeenCalledTimes(5)
+  rebuilt()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await body()).toContain('.w-max')
+
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('discards stale compilation when the graph changes during activation', async () => {
@@ -478,28 +539,31 @@ it('hands a cold-start veil over to a real style on the first successful fetch',
       return style
     },
   })
+  const sync = graphSync()
   const fetcher = vi.fn()
     .mockResolvedValueOnce(new Response(null, { status: 503 }))
-    .mockImplementationOnce((_url, { signal }: RequestInit) => new Promise((_resolve, reject) => {
-      signal?.addEventListener('abort', () => reject(new Error('timeout')), { once: true })
-    }))
     .mockResolvedValueOnce(new Response('.w-full { width: 100%; }', { headers: { ETag: '"ready"' } }))
   vi.stubGlobal('fetch', fetcher)
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  disposers.push(mountStyles())
+  disposers.push(mountStyles(sync.ctx))
   await vi.advanceTimersByTimeAsync(0)
   expect(append).toHaveBeenCalledExactlyOnceWith(style)
   expect(style.textContent).toBe('')
   // 取样式失败也立刻揭晓引导层：界面照常显示，只是样式可能还是上次的。
   expect(bootStyle.remove).toHaveBeenCalledOnce()
   expect(bootRoot.remove).toHaveBeenCalledOnce()
-  await vi.advanceTimersByTimeAsync(17000)
+  // 没有轮询：不会再自己重试第二次。
+  await vi.advanceTimersByTimeAsync(60000)
+  expect(fetcher).toHaveBeenCalledOnce()
+
+  // 下一次插件图变化才补取，拿到样式后接管并移除阻塞式 link。
+  sync.settle()
+  await vi.advanceTimersByTimeAsync(0)
   expect(fetcher).toHaveBeenCalledTimes(2)
-  await vi.advanceTimersByTimeAsync(2000)
   expect(style.textContent).toContain('.w-full')
-  expect(link.textContent).toBe('')
   expect(link.remove).toHaveBeenCalledOnce()
-  expect(fetcher.mock.calls[2][1].headers).toEqual({})
+  expect(fetcher.mock.calls[1][1].headers).toEqual({})
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('adopts the boot style, conditionally refreshes it, preserves it on failure, and aborts on disposal', async () => {
@@ -513,13 +577,14 @@ it('adopts the boot style, conditionally refreshes it, preserves it on failure, 
     getElementById: () => null,
     createElement,
   })
+  const sync = graphSync()
   const fetcher = vi.fn()
     .mockResolvedValueOnce(new Response('.w-full {}', { headers: { ETag: '"one"' } }))
     .mockResolvedValueOnce(new Response(null, { status: 304 }))
     .mockResolvedValueOnce(new Response(null, { status: 503 }))
   vi.stubGlobal('fetch', fetcher)
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  const dispose = mountStyles()
+  const dispose = mountStyles(sync.ctx)
   disposers.push(dispose)
   await vi.advanceTimersByTimeAsync(0)
   expect(createElement).not.toHaveBeenCalled()
@@ -527,22 +592,47 @@ it('adopts the boot style, conditionally refreshes it, preserves it on failure, 
   expect(String(fetcher.mock.calls[0][0])).toBe('https://example.test/prefix/plugins/taiwind.css')
   expect(style.textContent).toBe('.w-full {}')
   expect(link.remove).toHaveBeenCalledOnce()
-  await vi.advanceTimersByTimeAsync(4000)
+
+  // 稳态零请求：没有定时器，空闲多久都不发请求。
+  await vi.advanceTimersByTimeAsync(60000)
+  expect(fetcher).toHaveBeenCalledOnce()
+
+  // 同步中（插件安装/卸载进行中）不刷新；收敛后才带 ETag 条件请求一次。
+  sync.begin()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(fetcher).toHaveBeenCalledOnce()
+  sync.settle()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(fetcher).toHaveBeenCalledTimes(2)
   expect(fetcher.mock.calls[1][1].headers).toEqual({ 'If-None-Match': '"one"' })
+  expect(style.textContent).toBe('.w-full {}')
+
+  // 接口报错时保留上一份样式，只告警一次。
+  sync.settle()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(fetcher).toHaveBeenCalledTimes(3)
   expect(style.textContent).toBe('.w-full {}')
   expect(console.warn).toHaveBeenCalledOnce()
 
+  // 在途请求期间的多条图变更合并成一次补跑。
   let finish!: (response: Response) => void
   fetcher.mockImplementationOnce(() => new Promise((done) => {
     finish = done
   }))
-  await vi.advanceTimersByTimeAsync(2000)
+  sync.settle()
+  await vi.advanceTimersByTimeAsync(0)
+  sync.settle()
+  sync.settle()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(fetcher).toHaveBeenCalledTimes(4)
   const signal = fetcher.mock.calls[3][1].signal as AbortSignal
   disposers.splice(0).forEach(cleanup => cleanup())
   expect(signal.aborted).toBe(true)
   expect(style.remove).toHaveBeenCalledOnce()
+  expect(sync.listeners()).toBe(0)
   finish(new Response('.late {}'))
   await vi.advanceTimersByTimeAsync(0)
   expect(style.textContent).toBe('.w-full {}')
+  expect(fetcher).toHaveBeenCalledTimes(4)
   expect(vi.getTimerCount()).toBe(0)
 })

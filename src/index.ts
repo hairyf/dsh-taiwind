@@ -2,7 +2,7 @@ import type { HostContext } from './types'
 import { createHash } from 'node:crypto'
 import { readStylesCache, stylesCachePath, writeStylesCache } from './cache'
 import { compilePlugins } from './compiler'
-import { BOOT_HINT, BOOT_REVEAL_DELAY_MS, BOOT_ROOT_ID, BOOT_STYLE_ID, BOOT_WORDMARK, PLUGIN_ID, POLL_INTERVAL_MS, STYLESHEET_PATH } from './constants'
+import { BOOT_HINT, BOOT_REVEAL_DELAY_MS, BOOT_ROOT_ID, BOOT_STYLE_ID, BOOT_WORDMARK, PLUGIN_ID, STYLESHEET_PATH } from './constants'
 
 export const name = PLUGIN_ID
 export const inject = ['clientModules', 'webServer', 'connection']
@@ -50,20 +50,6 @@ export async function apply(ctx: HostContext): Promise<void> {
   let pending: Promise<void> | undefined
   let lastError = ''
   let lastCacheError = ''
-  // 上一次编译成功时所用的「插件列表 + 各自产物版本」签名。每次刷新只比对这个
-  // 字符串：纯内存、零 IO，签名没变就完全不碰编译器，签名变了才走一遍完整编译。
-  let appliedSignature = ''
-  // 上一次编译失败时的签名。同一个签名失败后不再重复重试，避免坏配置把昂贵的编译
-  // 变成常态；签名一变（插件换了）或图/产物事件到来时立刻重试。
-  let failedSignature = ''
-
-  /**
-   * 当前插件图签名：每个插件一行 `id@rev`。`rev` 是客户端产物（client bundle）的
-   * 不透明版本号，由 mtime/ctime/size 推出——插件重装、升级、重新构建都会换 rev，
-   * 插件增删则直接改变行数，所以它同时覆盖了「插件列表」和「每个插件的版本」。
-   */
-  const graphSignature = (): string =>
-    ctx.clientModules.graph().entries.map(({ id, rev }) => `${id}@${rev}`).sort().join('\n')
 
   const persist = async (signature: string, content: string): Promise<void> => {
     // 落盘失败只影响下次冷启动的首屏速度，绝不阻断本次下发。
@@ -87,7 +73,6 @@ export async function apply(ctx: HostContext): Promise<void> {
     pending = (async () => {
       while (true) {
         const current = generation
-        const currentSignature = graphSignature()
         const entries = ctx.clientModules.graph().entries.map(({ id }) => {
           const path = ctx.clientModules.clientPath(id)
           if (!path)
@@ -95,22 +80,12 @@ export async function apply(ctx: HostContext): Promise<void> {
           return { id, path }
         })
         const warnings: string[] = []
-        let compiled: string
-        try {
-          compiled = await compilePlugins(entries, message => warnings.push(message))
-        }
-        catch (error) {
-          // 记住失败时的签名：同样的插件图不必每个 tick 再烧一遍编译。
-          failedSignature = currentSignature
-          throw error
-        }
+        const compiled = await compilePlugins(entries, message => warnings.push(message))
         if (disposed)
           return
         if (generation !== current)
           continue
         css = compiled
-        appliedSignature = currentSignature
-        failedSignature = ''
         etag = `"${createHash('sha256').update(compiled).digest('hex')}"`
         // 落盘不阻塞下发：写失败只影响下次冷启动的首屏速度。
         void persist(etag.slice(1, -1), compiled)
@@ -138,33 +113,18 @@ export async function apply(ctx: HostContext): Promise<void> {
     }
   }
 
-  const update = (): void => {
-    void refresh().catch(fail)
-  }
-
+  // 只在插件图或产物真的变了才重编：没有轮询，空闲时零开销、零定时器。
+  // 事件重复（同一次产物变化既报 rebuilt 又报 graph）是无害的：内容没变时
+  // compilePlugins 内部的内容哈希直接命中缓存，不会再跑一遍 Tailwind。
   const invalidate = (): void => {
+    if (disposed)
+      return
     generation++
-    update()
+    void refresh().catch(fail)
   }
 
   ctx.effect(() => ctx.clientModules.onGraphChanged(invalidate))
   ctx.effect(() => ctx.clientModules.onRebuilt(invalidate))
-
-  // 轮询只是兜底：万一某次图变化没有落到事件上，2 秒后仍能自愈。
-  // 每 tick 只做一次纯内存的签名比对——插件列表或某个插件的产物版本没变就直接返回，
-  // 昂贵的编译只在签名真的变了（或上一轮编译失败过）时才跑。
-  ctx.effect(() => {
-    const timer = setInterval(() => {
-      if (disposed || pending)
-        return
-      const current = graphSignature()
-      if (current === appliedSignature || current === failedSignature)
-        return
-      invalidate()
-    }, POLL_INTERVAL_MS)
-    timer.unref()
-    return () => clearInterval(timer)
-  })
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -183,9 +143,9 @@ export async function apply(ctx: HostContext): Promise<void> {
       }
       res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate')
       res.setHeader('X-Content-Type-Options', 'nosniff')
-      // 只有手里什么都没有时才等这一轮编译：已有可用样式（内存或磁盘）
-      // 就直接下发，别让客户端多等一个扫描编译周期。
-      if (pending && !css)
+      // 有编译在飞就等它：没有轮询之后，客户端只会在图变化后取一次样式，
+      // 提前返回上一版 CSS 就没有第二次机会补齐了。
+      if (pending)
         await pending.catch(() => {})
       // 编译失败但手里还有上次的样式（内存或磁盘），照常下发：
       // 界面继续可用，等图变化/产物重建事件触发下一轮编译再生效。

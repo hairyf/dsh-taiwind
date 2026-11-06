@@ -11,11 +11,6 @@ export const BOOT_ROOT_ID = 'dsh-taiwind-boot'
  */
 export const BOOT_WORDMARK = 'HARNESS'
 export const BOOT_HINT = 'Loading appearance…'
-/**
- * 宿主侧兜底轮询间隔。每 tick 只做一次纯内存的插件图签名比对（插件列表 + 各自
- * 产物版本），签名没变就立刻返回，不会触发编译；它只用来兜住漏掉的图变化事件。
- */
-export const POLL_INTERVAL_MS = 2000
 
 /** 编译产物在 `~/.dsh` 下的位置：`<home>/taiwind/styles.css`。 */
 export const CACHE_DIRECTORY = 'taiwind'
